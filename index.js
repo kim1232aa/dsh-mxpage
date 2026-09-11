@@ -5,6 +5,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { crc32 } from "node:zlib";
 //#region src/config.ts
 const Config = Schema.object({
 	imageBaseUrl: Schema.string().default("https://api.openai.com/v1").description("图像 API 根路径，需含 /v1"),
@@ -27,6 +28,7 @@ const Config = Schema.object({
 	analyzeTimeoutMs: Schema.number().default(12e4),
 	maxReferenceImages: Schema.number().default(4),
 	maxParallelSections: Schema.number().default(2),
+	maxParallelProjects: Schema.number().default(1).description("批量 SKU 同时进行的项目数，默认 1"),
 	generateAsJob: Schema.boolean().default(true),
 	allowSvgFallback: Schema.boolean().default(false)
 });
@@ -677,7 +679,7 @@ function parseProductAnalysis(value) {
 		suggestedSectionPlan: parseSuggested(obj.suggestedSectionPlan)
 	};
 }
-function fail$5(message) {
+function fail$6(message) {
 	throw new Error(redactSecrets(message));
 }
 function readU32BE(bytes, offset) {
@@ -734,12 +736,12 @@ function parseJpegSize(bytes) {
 	return null;
 }
 function readImageFile(absPath) {
-	if (statSync(absPath).size > 20971520) fail$5("image exceeds 20MiB");
+	if (statSync(absPath).size > 20971520) fail$6("image exceeds 20MiB");
 	const bytes = new Uint8Array(readFileSync(absPath));
-	if (bytes.byteLength > 20971520) fail$5("image exceeds 20MiB");
+	if (bytes.byteLength > 20971520) fail$6("image exceeds 20MiB");
 	const png = parsePngSize(bytes);
 	if (png) {
-		if (png.width > 8192 || png.height > 8192) fail$5("image edge exceeds 8192");
+		if (png.width > 8192 || png.height > 8192) fail$6("image edge exceeds 8192");
 		return {
 			bytes,
 			mediaType: "image/png"
@@ -747,17 +749,17 @@ function readImageFile(absPath) {
 	}
 	const jpeg = parseJpegSize(bytes);
 	if (jpeg) {
-		if (jpeg.width > 8192 || jpeg.height > 8192) fail$5("image edge exceeds 8192");
+		if (jpeg.width > 8192 || jpeg.height > 8192) fail$6("image edge exceeds 8192");
 		return {
 			bytes,
 			mediaType: "image/jpeg"
 		};
 	}
-	fail$5("unsupported image format");
+	fail$6("unsupported image format");
 }
 //#endregion
 //#region src/pipeline/analyze.ts
-function fail$4(error) {
+function fail$5(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -797,19 +799,19 @@ function markFailed$1(store, projectId) {
 async function analyzeProduct(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	if (signal.aborted) throw new Error("已取消");
-	if (!deps.completeJson) return fail$4(NO_VISION);
+	if (!deps.completeJson) return fail$5(NO_VISION);
 	const status = record.status;
-	if (status !== "created" && status !== "failed" && status !== "analyzing") return fail$4("MXPAGE_STATE");
+	if (status !== "created" && status !== "failed" && status !== "analyzing") return fail$5("MXPAGE_STATE");
 	if (status === "created" || status === "failed") try {
 		deps.store.write(record.id, { status: "analyzing" });
 	} catch {
-		return fail$4("MXPAGE_STATE");
+		return fail$5("MXPAGE_STATE");
 	}
 	try {
 		const images = loadProjectImages(record);
 		if (images.length === 0) {
 			markFailed$1(deps.store, record.id);
-			return fail$4(NO_VISION);
+			return fail$5(NO_VISION);
 		}
 		const user = buildProductAnalysisPrompt(record.assets.map((asset) => ({
 			role: asset.role,
@@ -825,7 +827,7 @@ async function analyzeProduct(deps, args, signal) {
 		});
 		if (!result.ok) {
 			markFailed$1(deps.store, record.id);
-			return fail$4(result.error);
+			return fail$5(result.error);
 		}
 		const analysisPath = assertInside(record.workspaceDir, join(record.workspaceDir, "analysis.json"));
 		writeFileSync(analysisPath, JSON.stringify(result.value, null, 2));
@@ -839,7 +841,7 @@ async function analyzeProduct(deps, args, signal) {
 	} catch (err) {
 		if (signal.aborted || err instanceof Error && err.message === "已取消") throw err instanceof Error ? err : /* @__PURE__ */ new Error("已取消");
 		markFailed$1(deps.store, record.id);
-		return fail$4(err instanceof Error ? err.message : String(err));
+		return fail$5(err instanceof Error ? err.message : String(err));
 	}
 }
 //#endregion
@@ -1187,7 +1189,7 @@ function parseSectionPlan(value) {
 }
 //#endregion
 //#region src/pipeline/plan.ts
-function fail$3(error) {
+function fail$4(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1253,10 +1255,10 @@ function markFailed(store, projectId) {
 async function planPage(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	if (signal.aborted) throw new Error("已取消");
-	if (record.status !== "analyzed" && record.status !== "planned") return fail$3("MXPAGE_STATE");
-	if (!deps.completeJson) return fail$3(NO_VISION);
+	if (record.status !== "analyzed" && record.status !== "planned") return fail$4("MXPAGE_STATE");
+	if (!deps.completeJson) return fail$4(NO_VISION);
 	const analysis = readAnalysisFile(record.workspaceDir);
-	if (!analysis) return fail$3("MXPAGE_STATE");
+	if (!analysis) return fail$4("MXPAGE_STATE");
 	const heroCount = clamp(args.heroCount, 1, 5, deps.config.defaultHeroCount);
 	const detailCount = clamp(args.detailCount, 1, 10, deps.config.defaultDetailCount);
 	const platform = args.platform === "xiaohongshu" ? "xiaohongshu" : "ecommerce";
@@ -1265,7 +1267,7 @@ async function planPage(deps, args, signal) {
 	try {
 		deps.store.write(record.id, { status: "planning" });
 	} catch {
-		return fail$3("MXPAGE_STATE");
+		return fail$4("MXPAGE_STATE");
 	}
 	try {
 		const user = buildSectionPlanningPrompt(analysis, {
@@ -1283,7 +1285,7 @@ async function planPage(deps, args, signal) {
 		});
 		if (!result.ok) {
 			markFailed(deps.store, record.id);
-			return fail$3(result.error);
+			return fail$4(result.error);
 		}
 		const sections = normalizeSections(result.value);
 		const visualStyleGuide = result.value.visualStyleGuide;
@@ -1311,7 +1313,7 @@ async function planPage(deps, args, signal) {
 	} catch (err) {
 		if (signal.aborted || err instanceof Error && err.message === "已取消") throw err instanceof Error ? err : /* @__PURE__ */ new Error("已取消");
 		markFailed(deps.store, record.id);
-		return fail$3(err instanceof Error ? err.message : String(err));
+		return fail$4(err instanceof Error ? err.message : String(err));
 	}
 }
 //#endregion
@@ -1436,7 +1438,7 @@ function parseVisualPrompt(value) {
 }
 //#endregion
 //#region src/pipeline/visual-prompt.ts
-function fail$2(error) {
+function fail$3(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1458,9 +1460,9 @@ function syntheticSection(sectionKey, productName) {
 async function refinePrompt(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	if (signal.aborted) throw new Error("已取消");
-	if (!deps.completeJson) return fail$2(NO_VISION);
+	if (!deps.completeJson) return fail$3(NO_VISION);
 	const analysis = readAnalysisFile(record.workspaceDir);
-	if (!analysis) return fail$2("MXPAGE_STATE");
+	if (!analysis) return fail$3("MXPAGE_STATE");
 	const plan = readPlanFile(record.workspaceDir);
 	const styleGuide = readStyleGuideFile(record.workspaceDir) ?? plan?.visualStyleGuide;
 	const section = plan?.sections.find((item) => item.sectionKey === args.sectionKey) ?? syntheticSection(args.sectionKey, analysis.productName);
@@ -1489,7 +1491,7 @@ async function refinePrompt(deps, args, signal) {
 			repairUser: buildVisualPromptRepairPrompt,
 			signal
 		});
-		if (!result.ok) return fail$2(result.error);
+		if (!result.ok) return fail$3(result.error);
 		const dir = assertInside(record.workspaceDir, join(record.workspaceDir, "prompts"));
 		mkdirSync(dir, { recursive: true });
 		const file = assertInside(record.workspaceDir, join(dir, `${args.sectionKey}.json`));
@@ -1504,13 +1506,13 @@ async function refinePrompt(deps, args, signal) {
 		};
 	} catch (err) {
 		if (signal.aborted || err instanceof Error && err.message === "已取消") throw err instanceof Error ? err : /* @__PURE__ */ new Error("已取消");
-		return fail$2(err instanceof Error ? err.message : String(err));
+		return fail$3(err instanceof Error ? err.message : String(err));
 	}
 }
 //#endregion
 //#region src/pipeline/generate.ts
 const MISSING_PROMPT = "missing prompt; call mxpage_refine_prompt or pass prompt_override";
-function fail$1(error) {
+function fail$2(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1586,7 +1588,7 @@ async function generateSection(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	let prompt = resolvePrompt(record.workspaceDir, args.sectionKey, args.promptOverride);
 	if (!prompt) {
-		if (!deps.completeJson) return fail$1(MISSING_PROMPT);
+		if (!deps.completeJson) return fail$2(MISSING_PROMPT);
 		const refined = await refinePrompt({
 			store: deps.store,
 			completeJson: deps.completeJson
@@ -1594,7 +1596,7 @@ async function generateSection(deps, args, signal) {
 			projectId: args.projectId,
 			sectionKey: args.sectionKey
 		}, signal);
-		if (!refined.ok) return fail$1(refined.error);
+		if (!refined.ok) return fail$2(refined.error);
 		prompt = refined.finalPrompt;
 	}
 	const model = args.model ?? deps.config.imageModel;
@@ -1723,7 +1725,7 @@ function buildImageEditPrompt(section, referenceAssets = [], mode = "repaint", a
 }
 //#endregion
 //#region src/pipeline/edit.ts
-function fail(error) {
+function fail$1(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1747,7 +1749,7 @@ async function editSection(deps, args, signal) {
 	if (signal.aborted) throw new Error("已取消");
 	const projectDir = record.workspaceDir;
 	const outputPath = assertInside(projectDir, join(projectDir, "output", `${args.sectionKey}.png`));
-	if (!existsSync(outputPath)) return fail("MXPAGE_NOT_FOUND");
+	if (!existsSync(outputPath)) return fail$1("MXPAGE_NOT_FOUND");
 	const section = readPlanFile(projectDir)?.sections.find((item) => item.sectionKey === args.sectionKey);
 	const generation = {
 		type: section?.type ?? (args.sectionKey.startsWith("hero_") ? "hero" : "custom"),
@@ -2023,6 +2025,177 @@ function resolveImages$2(config, injected) {
 	return createImagesClient({
 		baseUrl: config.imageBaseUrl,
 		apiKey
+	});
+}
+//#endregion
+//#region src/pipeline/export.ts
+function fail(error) {
+	return {
+		ok: false,
+		error: redactSecrets(error)
+	};
+}
+function u16(n) {
+	const buf = Buffer.alloc(2);
+	buf.writeUInt16LE(n & 65535);
+	return buf;
+}
+function u32(n) {
+	const buf = Buffer.alloc(4);
+	buf.writeUInt32LE(n >>> 0);
+	return buf;
+}
+function zipEntryName(absPath) {
+	const name = basename(absPath);
+	if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) throw new Error(`invalid zip entry name: ${name}`);
+	return name;
+}
+/** Minimal ZIP (STORE) using node:zlib crc32. No extra deps. */
+function writeStoreZip(zipPath, entries) {
+	const locals = [];
+	const centrals = [];
+	let offset = 0;
+	for (const entry of entries) {
+		const nameBuf = Buffer.from(entry.name, "utf8");
+		const data = entry.data;
+		const crc = crc32(data) >>> 0;
+		const size = data.length;
+		const local = Buffer.concat([
+			u32(67324752),
+			u16(20),
+			u16(0),
+			u16(0),
+			u16(0),
+			u16(0),
+			u32(crc),
+			u32(size),
+			u32(size),
+			u16(nameBuf.length),
+			u16(0),
+			nameBuf
+		]);
+		locals.push(local, data);
+		centrals.push(Buffer.concat([
+			u32(33639248),
+			u16(20),
+			u16(20),
+			u16(0),
+			u16(0),
+			u16(0),
+			u16(0),
+			u32(crc),
+			u32(size),
+			u32(size),
+			u16(nameBuf.length),
+			u16(0),
+			u16(0),
+			u16(0),
+			u16(0),
+			u32(0),
+			u32(offset),
+			nameBuf
+		]));
+		offset += local.length + data.length;
+	}
+	const centralDir = Buffer.concat(centrals);
+	const eocd = Buffer.concat([
+		u32(101010256),
+		u16(0),
+		u16(0),
+		u16(entries.length),
+		u16(entries.length),
+		u32(centralDir.length),
+		u32(offset),
+		u16(0)
+	]);
+	writeFileSync(zipPath, Buffer.concat([
+		...locals,
+		centralDir,
+		eocd
+	]));
+}
+function exportPage(deps, args) {
+	let record;
+	try {
+		record = deps.store.read(args.projectId);
+	} catch {
+		return fail("MXPAGE_NOT_FOUND");
+	}
+	const format = args.format ?? "paths";
+	if (format !== "paths" && format !== "zip") return fail("invalid format");
+	try {
+		const projectDir = record.workspaceDir;
+		const sections = listOutputSections(projectDir);
+		const files = sections.map((section) => section.outputPath);
+		if (format === "paths") return {
+			ok: true,
+			format,
+			files
+		};
+		const outputDir = assertInside(projectDir, join(projectDir, "output"));
+		mkdirSync(outputDir, { recursive: true });
+		const iso = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+		const zipPath = assertInside(projectDir, join(outputDir, `export-${iso}.zip`));
+		const zipEntries = [];
+		for (const section of sections) {
+			const abs = assertInside(projectDir, section.outputPath);
+			if (!existsSync(abs)) continue;
+			zipEntries.push({
+				name: zipEntryName(abs),
+				data: readFileSync(abs)
+			});
+		}
+		const analysisPath = assertInside(projectDir, join(projectDir, "analysis.json"));
+		if (existsSync(analysisPath)) zipEntries.push({
+			name: "analysis.json",
+			data: readFileSync(analysisPath)
+		});
+		writeStoreZip(zipPath, zipEntries);
+		return {
+			ok: true,
+			format,
+			files,
+			zipPath
+		};
+	} catch (err) {
+		return fail(err instanceof Error ? err.message : String(err));
+	}
+}
+//#endregion
+//#region src/tools/export.ts
+const FORMATS = ["paths", "zip"];
+function exportPageTool(opts) {
+	return defineTool({
+		name: "mxpage_export_page",
+		description: "List generated section PNG paths or zip them with analysis.json. format defaults to paths. Zip is written to output/export-<iso>.zip.",
+		parameters: {
+			project_id: {
+				type: "string",
+				required: true,
+				description: "Existing mxpage project id"
+			},
+			format: {
+				type: "string",
+				enum: FORMATS,
+				description: "paths (default) or zip"
+			}
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: (_args, value) => [{
+				type: "text",
+				text: JSON.stringify(value, null, 2)
+			}]
+		},
+		execute: async (args) => {
+			return exportPage({ store: opts.store }, {
+				projectId: args.project_id,
+				format: args.format
+			});
+		}
 	});
 }
 //#endregion
@@ -2732,6 +2905,7 @@ function registerMxpageTools(ctx, config, deps) {
 		saveImage: toolSaveImage,
 		images: deps?.images
 	}));
+	ctx.tools.register(exportPageTool({ store }));
 	ctx.tools.register(jobStatusTool({
 		store,
 		jobs: ctx.jobs

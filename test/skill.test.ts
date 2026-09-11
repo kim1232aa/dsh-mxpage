@@ -18,6 +18,26 @@ function parseFrontmatter(text: string): { name?: string; description?: string; 
   return { name, description, body }
 }
 
+function loadSkill(dirName: string) {
+  const path = join(root, 'skills', dirName, 'SKILL.md')
+  assert.ok(existsSync(path), `skills/${dirName}/SKILL.md missing`)
+  return parseFrontmatter(readFileSync(path, 'utf8'))
+}
+
+function assertMxpageToolsOnly(body: string, extraAllowed: string[] = []) {
+  assert.doesNotMatch(body, /generate_image|image_generate/)
+  const allowed = new Set(extraAllowed)
+  const mentions = body.match(/`[a-z][a-z0-9_]*(?:\/[a-z][a-z0-9_]*)*`/g) ?? []
+  for (const raw of mentions) {
+    const inner = raw.slice(1, -1)
+    for (const part of inner.split('/')) {
+      if (!part.includes('_')) continue
+      if (allowed.has(part)) continue
+      assert.match(part, /^mxpage_/, `non-mxpage tool mentioned: ${part}`)
+    }
+  }
+}
+
 test('package.json files includes skills next to index.js', () => {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { files: string[] }
   assert.ok(pkg.files.includes('skills'))
@@ -29,10 +49,16 @@ test('ecommerce skill sits next to built index.js', () => {
   assert.ok(existsSync(skillPath), 'skills/mxpage-ecommerce-page/SKILL.md missing')
 })
 
-test('only the ecommerce skill is shipped (no xiaohongshu/batch)', () => {
+test('ships kebab-case ecommerce, xiaohongshu, and batch-sku skills', () => {
   assert.ok(existsSync(join(root, 'skills')))
   const names = readdirSync(join(root, 'skills')).sort()
-  assert.deepEqual(names, ['mxpage-ecommerce-page'])
+  assert.deepEqual(names, ['mxpage-batch-sku', 'mxpage-ecommerce-page', 'mxpage-xiaohongshu'])
+  for (const dir of names) {
+    const { name, description } = loadSkill(dir)
+    assert.equal(name, dir)
+    assert.match(name!, /^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+    assert.ok(description, `${dir} description required for DSH catalog`)
+  }
 })
 
 test('skill frontmatter is kebab-case with Chinese catalog triggers', () => {
@@ -65,4 +91,27 @@ test('skill body covers forced order, anchoring, stop-on-error, and generate_pag
   assert.match(body, /配额/)
   assert.doesNotMatch(body, /几何不可反转/)
   assert.doesNotMatch(body, /禁止逆风/)
+})
+
+test('xiaohongshu skill uses 3:4 and xiaohongshu_page', () => {
+  const { name, body } = loadSkill('mxpage-xiaohongshu')
+  assert.equal(name, 'mxpage-xiaohongshu')
+  assert.match(body, /3:4/)
+  assert.match(body, /xiaohongshu_page/)
+  assert.match(body, /mxpage_plan_page/)
+  assert.match(body, /mxpage_refine_prompt/)
+  assert.match(body, /mxpage_generate_section|mxpage_generate_page/)
+  assert.match(body, /mxpage_edit_section/)
+  assertMxpageToolsOnly(body, ['ask_user_question'])
+})
+
+test('batch-sku skill is one project per SKU', () => {
+  const { name, body } = loadSkill('mxpage-batch-sku')
+  assert.equal(name, 'mxpage-batch-sku')
+  assert.match(body, /每个商品/)
+  assert.match(body, /独立 `mxpage_create_project`/)
+  assert.match(body, /不要跨 project/)
+  assert.match(body, /mxpage_export_page/)
+  assert.match(body, /maxParallelProjects/)
+  assertMxpageToolsOnly(body)
 })

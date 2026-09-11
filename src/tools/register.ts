@@ -8,6 +8,7 @@ import { addAssetTool } from './add-asset.ts'
 import { analyzeProductTool } from './analyze.ts'
 import { createProjectTool } from './create-project.ts'
 import { editSectionTool } from './edit-section.ts'
+import { exportPageTool } from './export.ts'
 import { generatePageTool } from './generate-page.ts'
 import { generateSectionTool } from './generate-section.ts'
 import { jobCancelTool, jobStatusTool, type MxpageJobsApi } from './job.ts'
@@ -106,6 +107,7 @@ export function registerMxpageTools(
     saveImage: toolSaveImage,
     images: deps?.images,
   }))
+  ctx.tools.register(exportPageTool({ store }))
   ctx.tools.register(jobStatusTool({ store, jobs: ctx.jobs }))
   ctx.tools.register(jobCancelTool({ jobs: ctx.jobs }))
 }

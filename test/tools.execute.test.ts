@@ -97,6 +97,7 @@ test('registers the mxpage_* tools and never generate_image', (t) => {
       'mxpage_analyze_product',
       'mxpage_create_project',
       'mxpage_edit_section',
+      'mxpage_export_page',
       'mxpage_generate_page',
       'mxpage_generate_section',
       'mxpage_job_cancel',

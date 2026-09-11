@@ -21,6 +21,8 @@ export interface Config {
   analyzeTimeoutMs: number
   maxReferenceImages: number
   maxParallelSections: number
+  /** 批量 SKU 同时进行的项目数，默认 1（串行） */
+  maxParallelProjects?: number
   generateAsJob: boolean
   allowSvgFallback: boolean
 }
@@ -41,6 +43,7 @@ export const Config: Schema<Config> = Schema.object({
   analyzeTimeoutMs: Schema.number().default(120_000),
   maxReferenceImages: Schema.number().default(4),
   maxParallelSections: Schema.number().default(2),
+  maxParallelProjects: Schema.number().default(1).description('批量 SKU 同时进行的项目数，默认 1'),
   generateAsJob: Schema.boolean().default(true),
   allowSvgFallback: Schema.boolean().default(false),
 }) as Schema<Config>
