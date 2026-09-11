@@ -2000,7 +2000,7 @@ function registerMxpageTools(ctx, config, deps) {
 	const saveImage = asSaveImage((input) => ctx.attachments.saveImage(input));
 	const completeJson = resolveCompleteJson({
 		completeJson: deps?.completeJson,
-		llm: deps?.llm ?? ctx.llm,
+		llm: deps?.llm,
 		config,
 		saveImage
 	});
@@ -2045,7 +2045,7 @@ const inject = [
 	"jobs"
 ];
 function apply(ctx, config) {
-	registerMxpageTools(ctx, config, { llm: ctx.llm });
+	registerMxpageTools(ctx, config, { llm: ctx.get("llm") });
 }
 //#endregion
 export { Config, apply, inject, name };

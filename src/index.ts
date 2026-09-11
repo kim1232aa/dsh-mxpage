@@ -7,7 +7,9 @@ export const inject = ['tools', 'attachments', 'jobs']
 export { Config }
 
 export function apply(ctx: Context, config: MxpageConfig) {
+  // Cordis throws on `ctx.llm` unless `llm` is in inject. Use get() so web
+  // profile vision is optional and the plugin still boots.
   registerMxpageTools(ctx as never, config, {
-    llm: (ctx as { llm?: unknown }).llm,
+    llm: ctx.get('llm'),
   })
 }

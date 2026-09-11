@@ -66,7 +66,7 @@ export function registerMxpageTools(
   const saveImage = asSaveImage((input) => ctx.attachments.saveImage(input))
   const completeJson = resolveCompleteJson({
     completeJson: deps?.completeJson,
-    llm: deps?.llm ?? ctx.llm,
+    llm: deps?.llm,
     config,
     saveImage,
   })
