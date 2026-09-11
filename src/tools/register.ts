@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Config } from '../config.ts'
 import type { ImagesClient } from '../provider/openai-images.ts'
-import { resolveCompleteJson, type CompleteJson } from '../provider/vision-text.ts'
+import { resolveCompleteJson, type CompleteJson, type SaveImageFn } from '../provider/vision-text.ts'
 import { createStore } from '../service/project-store.ts'
 import { addAssetTool } from './add-asset.ts'
 import { analyzeProductTool } from './analyze.ts'
@@ -17,9 +17,16 @@ export interface MxpageToolsHost {
   attachments: {
     saveImage: (input: {
       data: Uint8Array
-      mediaType: 'image/png'
+      mediaType: string
       name?: string
-    }) => Promise<{ attachmentId: string }>
+    }) => Promise<{
+      attachmentId: string
+      mediaType?: string
+      bytes?: number
+      width?: number
+      height?: number
+      name?: string
+    }>
   }
   llm?: unknown
 }
@@ -35,6 +42,20 @@ export function resolveStoreRoot(config: Config): string {
   return join(process.env.DSH_HOME ?? homedir(), 'mxpage')
 }
 
+function asSaveImage(saveImage: MxpageToolsHost['attachments']['saveImage']): SaveImageFn {
+  return async (input) => {
+    const ref = await saveImage(input)
+    return {
+      attachmentId: ref.attachmentId,
+      mediaType: ref.mediaType ?? input.mediaType,
+      bytes: ref.bytes ?? input.data.byteLength,
+      width: ref.width ?? 0,
+      height: ref.height ?? 0,
+      name: ref.name ?? input.name,
+    }
+  }
+}
+
 export function registerMxpageTools(
   ctx: MxpageToolsHost,
   config: Config,
@@ -42,10 +63,12 @@ export function registerMxpageTools(
 ): void {
   const storeRoot = resolveStoreRoot(config)
   const store = createStore(storeRoot)
+  const saveImage = asSaveImage((input) => ctx.attachments.saveImage(input))
   const completeJson = resolveCompleteJson({
     completeJson: deps?.completeJson,
     llm: deps?.llm ?? ctx.llm,
     config,
+    saveImage,
   })
   ctx.tools.register(createProjectTool({ store, storeRoot, config }))
   ctx.tools.register(addAssetTool({ store, storeRoot }))

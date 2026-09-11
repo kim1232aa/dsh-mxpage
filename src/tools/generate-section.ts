@@ -15,7 +15,7 @@ export function generateSectionTool(opts: {
   config: Config
   saveImage: (input: {
     data: Uint8Array
-    mediaType: 'image/png'
+    mediaType: string
     name?: string
   }) => Promise<{ attachmentId: string }>
   images?: ImagesClient

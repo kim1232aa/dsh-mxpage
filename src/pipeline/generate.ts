@@ -46,7 +46,7 @@ export interface GenerateSectionDeps {
   images: ImagesClient
   saveImage: (input: {
     data: Uint8Array
-    mediaType: 'image/png'
+    mediaType: 'image/png' | string
     name?: string
   }) => Promise<{ attachmentId: string }>
   completeJson?: CompleteJson
@@ -156,15 +156,16 @@ export async function generateSection(
 ): Promise<GenerateSectionResult> {
   const record = deps.store.read(args.projectId)
   let prompt = resolvePrompt(record.workspaceDir, args.sectionKey, args.promptOverride)
-  if (!prompt && deps.completeJson) {
+  if (!prompt) {
+    if (!deps.completeJson) return fail(MISSING_PROMPT)
     const refined = await refinePrompt(
       { store: deps.store, completeJson: deps.completeJson },
       { projectId: args.projectId, sectionKey: args.sectionKey },
       signal,
     )
-    if (refined.ok) prompt = refined.finalPrompt
+    if (!refined.ok) return fail(refined.error)
+    prompt = refined.finalPrompt
   }
-  if (!prompt) return fail(MISSING_PROMPT)
 
   const model = args.model ?? deps.config.imageModel
   const size: ImageSize = args.size ?? '1024x1024'

@@ -1,3 +1,4 @@
+import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Config } from '../config.ts'
 import { redactSecrets } from '../util/redact.ts'
 
@@ -25,6 +26,21 @@ export type CompleteJsonResult =
 export type CompleteJson = (input: CompleteJsonInput) => Promise<CompleteJsonResult>
 
 export type JsonParseFn<T> = (value: unknown) => T
+
+export interface SavedImageRef {
+  attachmentId: string
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+  name?: string
+}
+
+export type SaveImageFn = (input: {
+  data: Uint8Array
+  mediaType: string
+  name?: string
+}) => Promise<SavedImageRef>
 
 export function extractJsonBlock(raw: string): string {
   const direct = raw.trim()
@@ -88,6 +104,13 @@ function dataUrl(image: VisionImage): string {
   return `data:${image.mediaType || 'image/png'};base64,${Buffer.from(image.bytes).toString('base64')}`
 }
 
+function asImageMediaType(value: string): string {
+  if (value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif' || value === 'image/png') {
+    return value
+  }
+  return 'image/png'
+}
+
 async function collectStreamText(stream: AsyncIterable<unknown>): Promise<string> {
   let text = ''
   let blockText = ''
@@ -124,16 +147,18 @@ function firstProvider(llm: object): string | undefined {
   return undefined
 }
 
-function createLlmCompleteJson(llm: object): CompleteJson {
+function createLlmCompleteJson(llm: object, saveImage?: SaveImageFn): CompleteJson {
   const rec = llm as {
     stream: (options: Record<string, unknown>) => AsyncIterable<unknown>
     listModels?: (provider: string) => Promise<unknown>
   }
   return async (input) => {
     if (input.signal?.aborted) throw new Error('已取消')
-    if (input.images && input.images.length > 0) {
+    const images = input.images ?? []
+    if (images.length > 0) {
       const vision = await llmHasVision(llm, input.signal)
       if (vision === false) return failResult(NO_VISION)
+      if (!saveImage) return failResult(NO_VISION)
     }
     const provider = firstProvider(llm) ?? 'default'
     let model = input.model
@@ -147,7 +172,7 @@ function createLlmCompleteJson(llm: object): CompleteJson {
               : undefined
             return Array.isArray(modalities) && modalities.includes('image')
           })
-          const picked = (input.images?.length ? withImage : undefined) ?? models[0]
+          const picked = (images.length ? withImage : undefined) ?? models[0]
           if (picked && typeof picked === 'object' && 'id' in picked) model = String((picked as { id: unknown }).id)
         }
       } catch {
@@ -155,9 +180,23 @@ function createLlmCompleteJson(llm: object): CompleteJson {
       }
     }
     model = model ?? 'default'
-    const userContent: unknown[] = [{ type: 'text', text: input.user }]
-    for (const image of input.images ?? []) {
-      userContent.push({ type: 'image_url', image_url: { url: dataUrl(image) } })
+    const content: ContentBlock[] = [
+      { type: 'text', text: input.user },
+    ]
+    if (images.length > 0 && saveImage) {
+      try {
+        for (const image of images) {
+          const ref = await saveImage({
+            data: image.bytes,
+            mediaType: asImageMediaType(image.mediaType),
+            name: image.filename,
+          })
+          content.push({ type: 'image', attachment: ref } as ContentBlock)
+        }
+      } catch (err) {
+        if (isAbort(err, input.signal)) throw new Error('已取消')
+        return failResult(err instanceof Error ? err.message : String(err))
+      }
     }
     try {
       const text = await collectStreamText(rec.stream({
@@ -165,10 +204,10 @@ function createLlmCompleteJson(llm: object): CompleteJson {
         model,
         system: input.system || JSON_SYSTEM,
         messages: [
-          {
-            role: 'user',
-            content: (input.images?.length ?? 0) > 0 ? userContent : input.user,
-          },
+          createUserMessage({
+            content,
+            source: { kind: 'plugin', plugin: 'mxpage' },
+          }),
         ],
         signal: input.signal,
       }))
@@ -243,6 +282,7 @@ export function resolveCompleteJson(opts: {
   completeJson?: CompleteJson
   llm?: unknown
   config: Config
+  saveImage?: SaveImageFn
 }): CompleteJson | undefined {
   if (opts.completeJson) return opts.completeJson
 
@@ -257,7 +297,7 @@ export function resolveCompleteJson(opts: {
   })()
 
   if (llmLooksUsable(opts.llm)) {
-    const llmCaller = createLlmCompleteJson(opts.llm as object)
+    const llmCaller = createLlmCompleteJson(opts.llm as object, opts.saveImage)
     if (!http) return llmCaller
     return async (input) => {
       if (input.images && input.images.length > 0) {

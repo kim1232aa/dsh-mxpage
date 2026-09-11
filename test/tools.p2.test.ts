@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { Config } from '../src/config.ts'
+import type { ImagesClient } from '../src/provider/openai-images.ts'
 import type { CompleteJson } from '../src/provider/vision-text.ts'
 import { registerMxpageTools } from '../src/tools/register.ts'
 import { VALID_ANALYSIS } from './fixtures.ts'
@@ -79,7 +80,7 @@ function validPlan(heroCount: number, detailCount: number) {
   }
 }
 
-function setup(t: TestContext, completeJson?: CompleteJson) {
+function setup(t: TestContext, completeJson?: CompleteJson, images?: ImagesClient) {
   const tmp = mkdtempSync(join(tmpdir(), 'mxpage-p2-'))
   t.after(() => rmSync(tmp, { recursive: true, force: true }))
   const tools: ToolDef[] = []
@@ -91,7 +92,10 @@ function setup(t: TestContext, completeJson?: CompleteJson) {
   }
   const fixture = join(tmp, 'fixture.png')
   writeFileSync(fixture, PNG)
-  registerMxpageTools(ctx as never, testConfig(tmp), completeJson ? { completeJson } : undefined)
+  registerMxpageTools(ctx as never, testConfig(tmp), {
+    ...(completeJson ? { completeJson } : {}),
+    ...(images ? { images } : {}),
+  })
   const byName = (name: string) => {
     const found = tools.find((tool) => tool.name === name)
     assert.ok(found, `missing tool ${name}`)
@@ -243,4 +247,120 @@ test('analyze/plan/refine render is text-only', (t) => {
     assert.equal(blocks.length, 1)
     assert.equal(blocks[0]?.type, 'text')
   }
+})
+
+test('short LLM plan is not padded with canned product copy', async (t) => {
+  const shortPlan = {
+    visualStyleGuide: {
+      styleName: '清爽电商',
+      colorPalette: '白+六色',
+      backgroundSystem: '浅底',
+      lighting: '柔光',
+      cameraLanguage: '3/4',
+      typography: '无衬线',
+      layoutRules: '中等密度',
+      propRules: '少道具',
+      productRenderingRules: '保持魔方结构',
+      negativeStyleConstraints: '禁止逆风、乱码',
+    },
+    sections: [{
+      id: 'hero_01',
+      type: 'hero',
+      title: '磁力主视觉',
+      goal: '展示磁力结构',
+      copy: '三阶磁力魔方',
+      visualPrompt: 'Primary Prompt: 磁力魔方主视觉\nEnglish Prompt: cube hero',
+      editableFields: { styleRole: 'hero' },
+    }],
+  }
+  const completeJson: CompleteJson = async ({ user }) => {
+    if (user.includes('product strategist') || user.includes('malformed product-analysis')) {
+      return { ok: true, text: JSON.stringify(VALID_ANALYSIS), modelUsed: 'mock-vision' }
+    }
+    return { ok: true, text: JSON.stringify(shortPlan), modelUsed: 'mock-text' }
+  }
+  const { fixture, byName } = setup(t, completeJson)
+  const created = await byName('mxpage_create_project').execute(
+    { image_paths: [fixture] },
+    fakeExec(),
+  ) as { ok: true; projectId: string; workspaceDir: string }
+  await byName('mxpage_analyze_product').execute({ project_id: created.projectId }, fakeExec())
+  const planned = await byName('mxpage_plan_page').execute(
+    { project_id: created.projectId, hero_count: 3, detail_count: 6 },
+    fakeExec(),
+  ) as {
+    ok: boolean
+    sections: Array<{ sectionKey: string; type: string; title: string; copy: string }>
+    previewConfig: { heroImageCount: number; detailSectionCount: number }
+  }
+  assert.equal(planned.ok, true)
+  assert.equal(planned.previewConfig.heroImageCount, 3)
+  assert.equal(planned.previewConfig.detailSectionCount, 6)
+  assert.equal(planned.sections.length, 1)
+  assert.equal(planned.sections[0]?.sectionKey, 'hero_01')
+  assert.equal(planned.sections[0]?.title, '磁力主视觉')
+  const planJson = readFileSync(join(created.workspaceDir, 'plan.json'), 'utf8')
+  assert.doesNotMatch(planJson, /第一屏主视觉/)
+  assert.doesNotMatch(planJson, /核心卖点速览/)
+  assert.doesNotMatch(planJson, /HERO_FALLBACK|DETAIL_FALLBACK/)
+})
+
+test('generate_section auto-VPA writes prompt file and succeeds', async (t) => {
+  const vpa = {
+    analysisSummary: '主视觉强调磁力结构',
+    finalPrompt: 'Square e-commerce hero of the 3x3 speed cube, main subject matches reference.',
+    negativePrompt: 'garbled text, reversed geometry',
+    qualityChecklist: ['主体与参考图一致', '避免乱码文字'],
+  }
+  const completeJson: CompleteJson = async ({ user }) => {
+    if (user.includes('Visual Prompt Agent') || user.includes('finalPrompt')) {
+      return { ok: true, text: JSON.stringify(vpa), modelUsed: 'mock-vpa' }
+    }
+    if (user.includes('product strategist') || user.includes('malformed product-analysis')) {
+      return { ok: true, text: JSON.stringify(VALID_ANALYSIS), modelUsed: 'mock-vision' }
+    }
+    return { ok: true, text: JSON.stringify(validPlan(3, 6)), modelUsed: 'mock-text' }
+  }
+  const images: ImagesClient = {
+    generate: async () => ({ bytes: new Uint8Array(PNG), mediaType: 'image/png' }),
+    edit: async () => { throw new Error('unused') },
+  }
+  const { fixture, byName } = setup(t, completeJson, images)
+  const created = await byName('mxpage_create_project').execute(
+    { image_paths: [fixture] },
+    fakeExec(),
+  ) as { ok: true; projectId: string; workspaceDir: string }
+  await byName('mxpage_analyze_product').execute({ project_id: created.projectId }, fakeExec())
+  const generated = await byName('mxpage_generate_section').execute(
+    { project_id: created.projectId, section_key: 'hero_01' },
+    fakeExec(),
+  ) as { ok: boolean; sectionKey: string; attachmentId: string }
+  assert.equal(generated.ok, true)
+  assert.equal(generated.sectionKey, 'hero_01')
+  const promptFile = join(created.workspaceDir, 'prompts', 'hero_01.json')
+  assert.ok(existsSync(promptFile))
+  assert.equal(JSON.parse(readFileSync(promptFile, 'utf8')).finalPrompt, vpa.finalPrompt)
+  assert.ok(existsSync(join(created.workspaceDir, 'output', 'hero_01.png')))
+})
+
+test('generate_section auto-VPA returns refine error instead of missing-prompt', async (t) => {
+  const completeJson: CompleteJson = async () => ({
+    ok: true,
+    text: JSON.stringify(VALID_ANALYSIS),
+    modelUsed: 'mock-vision',
+  })
+  const images: ImagesClient = {
+    generate: async () => ({ bytes: new Uint8Array(PNG), mediaType: 'image/png' }),
+    edit: async () => { throw new Error('unused') },
+  }
+  const { fixture, byName } = setup(t, completeJson, images)
+  const created = await byName('mxpage_create_project').execute(
+    { image_paths: [fixture] },
+    fakeExec(),
+  ) as { ok: true; projectId: string }
+  const result = await byName('mxpage_generate_section').execute(
+    { project_id: created.projectId, section_key: 'hero_01' },
+    fakeExec(),
+  )
+  assert.deepEqual(result, { ok: false, error: 'MXPAGE_STATE' })
 })

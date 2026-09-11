@@ -12,6 +12,7 @@ test('package.json declares dsh.bundle.patch', () => {
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.ok(pkg.peerDependencies['@deepseek-ai/cordis'])
+  assert.ok(pkg.peerDependencies['@deepseek-ai/dsh-llm'])
   assert.ok(pkg.peerDependencies['@deepseek-ai/dsh-tools'])
   assert.ok(pkg.peerDependencies['@deepseek-ai/schemastery'])
 })
