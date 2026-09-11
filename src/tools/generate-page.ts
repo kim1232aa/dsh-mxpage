@@ -291,34 +291,46 @@ export function generatePageTool(opts: {
         saveImage: opts.saveImage,
         completeJson: opts.completeJson,
       }
-      let assignedId = ''
-      const work = Promise.resolve().then(() => runPageJob(
+      let resolveStart!: (id: string) => void
+      let rejectStart!: (err: unknown) => void
+      const started = new Promise<string>((res, rej) => {
+        resolveStart = res
+        rejectStart = rej
+      })
+      const work = started.then((id) => runPageJob(
         pageDeps,
         { projectId, sectionKeys },
-        assignedId,
+        id,
         ac.signal,
       ))
-      const jobId = opts.jobs.start({
-        kind: PAGE_KIND,
-        label: `mxpage page ${projectId}`,
-        ...(exec.agent ? { owner: exec.agent } : {}),
-        run: () => ({
-          cancel: (reason?: string) => ac.abort(reason),
-          done: work.then(
-            () => ({ status: 'completed' as const }),
-            (err) => {
-              const aborted = isAbortErr(err, ac.signal)
-              return {
-                status: (aborted ? 'killed' : 'failed') as 'killed' | 'failed',
-                detail: redactSecrets(String(err instanceof Error ? err.message : err)),
-              }
-            },
-          ),
-        }),
-      })
-      assignedId = jobId
-      registerLiveJob(jobId, { projectDir: record.workspaceDir, abort: ac })
-      return { kind: 'background', jobId }
+      work.catch(() => {})
+      try {
+        const jobId = opts.jobs.start({
+          kind: PAGE_KIND,
+          label: `mxpage page ${projectId}`,
+          ...(exec.agent ? { owner: exec.agent } : {}),
+          run: () => ({
+            cancel: (reason?: string) => ac.abort(reason),
+            done: work.then(
+              () => ({ status: 'completed' as const }),
+              (err) => {
+                const aborted = isAbortErr(err, ac.signal)
+                return {
+                  status: (aborted ? 'killed' : 'failed') as 'killed' | 'failed',
+                  detail: redactSecrets(String(err instanceof Error ? err.message : err)),
+                }
+              },
+            ),
+          }),
+        })
+        registerLiveJob(jobId, { projectDir: record.workspaceDir, abort: ac })
+        resolveStart(jobId)
+        return { kind: 'background', jobId }
+      } catch (err) {
+        ac.abort()
+        rejectStart(err)
+        throw err
+      }
     },
   })
 }

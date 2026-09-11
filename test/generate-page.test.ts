@@ -112,7 +112,7 @@ function pageCompleteJson(): CompleteJson {
   }
 }
 
-function createJobs() {
+function createJobs(opts: { throwBeforeRun?: Error } = {}) {
   const records = new Map<string, JobRecord>()
   let n = 0
   let startCalls = 0
@@ -129,6 +129,7 @@ function createJobs() {
         run: () => JobHooks
       }) {
         startCalls += 1
+        if (opts.throwBeforeRun) throw opts.throwBeforeRun
         const hooks = spec.run()
         const id = `mxpage_page-${++n}`
         const rec: JobRecord = {
@@ -173,13 +174,18 @@ async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
 
 function setup(
   t: TestContext,
-  opts: { images?: ImagesClient; completeJson?: CompleteJson; injectImages?: boolean } = {},
+  opts: {
+    images?: ImagesClient
+    completeJson?: CompleteJson
+    injectImages?: boolean
+    throwBeforeRun?: Error
+  } = {},
 ) {
   const tmp = mkdtempSync(join(tmpdir(), 'mxpage-page-'))
   t.after(() => rmSync(tmp, { recursive: true, force: true }))
   const saved: SavedImage[] = []
   const tools: ToolDef[] = []
-  const jobs = createJobs()
+  const jobs = createJobs({ throwBeforeRun: opts.throwBeforeRun })
   const ctx = {
     tools: { register(tool: ToolDef) { tools.push(tool) } },
     attachments: {
@@ -416,4 +422,57 @@ test('aborted exec.signal throws AbortError and does not start a job', async (t)
     },
   )
   assert.equal(jobs.startCalls, 0)
+})
+
+test('jobs.start throw does not generate, write output, or leave unhandled rejection', async (t) => {
+  let generateCalls = 0
+  const images: ImagesClient = {
+    generate: async () => {
+      generateCalls += 1
+      return { bytes: new Uint8Array(PNG), mediaType: 'image/png' }
+    },
+    edit: async () => { throw new Error('unused') },
+  }
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason)
+  }
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => {
+    process.off('unhandledRejection', onUnhandled)
+  })
+
+  const startError = new Error('max concurrent jobs per owner')
+  const { fixture, byName, jobs } = setup(t, {
+    images,
+    completeJson: pageCompleteJson(),
+    throwBeforeRun: startError,
+  })
+  const created = await byName('mxpage_create_project').execute(
+    { image_paths: [fixture] },
+    fakeExec(),
+  ) as { ok: true; projectId: string; workspaceDir: string }
+
+  await assert.rejects(
+    () => byName('mxpage_generate_page').execute({ project_id: created.projectId }, fakeExec()),
+    (err: unknown) => {
+      assert.equal(err, startError)
+      return true
+    },
+  )
+
+  // Give a wrongly scheduled runPageJob time to hit images.generate / write output.
+  await new Promise((r) => setTimeout(r, 250))
+
+  assert.equal(jobs.startCalls, 1)
+  assert.equal(generateCalls, 0, 'images.generate must not run when start() throws')
+  const outputDir = join(created.workspaceDir, 'output')
+  const pngs = existsSync(outputDir)
+    ? readdirSync(outputDir).filter((n) => n.endsWith('.png'))
+    : []
+  assert.equal(pngs.length, 0, `unexpected output pngs: ${pngs.join(',')}`)
+  const tasksDir = join(created.workspaceDir, 'tasks')
+  const taskFiles = existsSync(tasksDir) ? readdirSync(tasksDir) : []
+  assert.equal(taskFiles.length, 0, `unexpected task files: ${taskFiles.join(',')}`)
+  assert.equal(unhandled.length, 0, `unhandled rejections: ${unhandled.map(String).join('; ')}`)
 })

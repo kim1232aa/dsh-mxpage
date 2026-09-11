@@ -2382,34 +2382,45 @@ function generatePageTool(opts) {
 				saveImage: opts.saveImage,
 				completeJson: opts.completeJson
 			};
-			let assignedId = "";
-			const work = Promise.resolve().then(() => runPageJob(pageDeps, {
+			let resolveStart;
+			let rejectStart;
+			const work = new Promise((res, rej) => {
+				resolveStart = res;
+				rejectStart = rej;
+			}).then((id) => runPageJob(pageDeps, {
 				projectId,
 				sectionKeys
-			}, assignedId, ac.signal));
-			const jobId = opts.jobs.start({
-				kind: PAGE_KIND,
-				label: `mxpage page ${projectId}`,
-				...exec.agent ? { owner: exec.agent } : {},
-				run: () => ({
-					cancel: (reason) => ac.abort(reason),
-					done: work.then(() => ({ status: "completed" }), (err) => {
-						return {
-							status: isAbortErr(err, ac.signal) ? "killed" : "failed",
-							detail: redactSecrets(String(err instanceof Error ? err.message : err))
-						};
+			}, id, ac.signal));
+			work.catch(() => {});
+			try {
+				const jobId = opts.jobs.start({
+					kind: PAGE_KIND,
+					label: `mxpage page ${projectId}`,
+					...exec.agent ? { owner: exec.agent } : {},
+					run: () => ({
+						cancel: (reason) => ac.abort(reason),
+						done: work.then(() => ({ status: "completed" }), (err) => {
+							return {
+								status: isAbortErr(err, ac.signal) ? "killed" : "failed",
+								detail: redactSecrets(String(err instanceof Error ? err.message : err))
+							};
+						})
 					})
-				})
-			});
-			assignedId = jobId;
-			registerLiveJob(jobId, {
-				projectDir: record.workspaceDir,
-				abort: ac
-			});
-			return {
-				kind: "background",
-				jobId
-			};
+				});
+				registerLiveJob(jobId, {
+					projectDir: record.workspaceDir,
+					abort: ac
+				});
+				resolveStart(jobId);
+				return {
+					kind: "background",
+					jobId
+				};
+			} catch (err) {
+				ac.abort();
+				rejectStart(err);
+				throw err;
+			}
 		}
 	});
 }
