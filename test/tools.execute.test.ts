@@ -66,7 +66,11 @@ function setup(
         }
       },
     },
-    jobs: { start() { throw new Error('jobs unused in P1') } },
+    jobs: {
+      start() { throw new Error('jobs unused in P1') },
+      kill() { return 'already-finished' as const },
+      get(id: string) { return { id, status: 'failed' } },
+    },
   }
   const fixture = join(tmp, 'fixture.png')
   writeFileSync(fixture, PNG)
@@ -88,7 +92,19 @@ test('registers the mxpage_* tools and never generate_image', (t) => {
   })
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ['mxpage_add_asset', 'mxpage_analyze_product', 'mxpage_create_project', 'mxpage_generate_section', 'mxpage_plan_page', 'mxpage_project_status', 'mxpage_refine_prompt'],
+    [
+      'mxpage_add_asset',
+      'mxpage_analyze_product',
+      'mxpage_create_project',
+      'mxpage_edit_section',
+      'mxpage_generate_page',
+      'mxpage_generate_section',
+      'mxpage_job_cancel',
+      'mxpage_job_status',
+      'mxpage_plan_page',
+      'mxpage_project_status',
+      'mxpage_refine_prompt',
+    ],
   )
   assert.ok(!tools.some((tool) => /generate_image|image_generate/i.test(tool.name)))
   const generate = tools.find((tool) => tool.name === 'mxpage_generate_section')!

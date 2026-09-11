@@ -12,12 +12,14 @@
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-jobs": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/schemastery": "*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "file:../../dsh-runtime/node_modules/@deepseek-ai/cordis",
+    "@deepseek-ai/dsh-jobs": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-jobs",
     "@deepseek-ai/dsh-llm": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-llm",
     "@deepseek-ai/dsh-tools": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-tools",
     "@deepseek-ai/schemastery": "file:../../dsh-runtime/node_modules/@deepseek-ai/schemastery",

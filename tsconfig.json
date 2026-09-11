@@ -13,6 +13,7 @@
     "erasableSyntaxOnly": true,
     "paths": {
       "@deepseek-ai/cordis": ["../../dsh-runtime/node_modules/@deepseek-ai/cordis"],
+      "@deepseek-ai/dsh-jobs": ["../../dsh-runtime/node_modules/@deepseek-ai/dsh-jobs"],
       "@deepseek-ai/dsh-llm": ["../../dsh-runtime/node_modules/@deepseek-ai/dsh-llm"],
       "@deepseek-ai/dsh-tools": ["../../dsh-runtime/node_modules/@deepseek-ai/dsh-tools"],
       "@deepseek-ai/schemastery": ["../../dsh-runtime/node_modules/@deepseek-ai/schemastery"]

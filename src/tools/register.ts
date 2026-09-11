@@ -7,7 +7,10 @@ import { createStore } from '../service/project-store.ts'
 import { addAssetTool } from './add-asset.ts'
 import { analyzeProductTool } from './analyze.ts'
 import { createProjectTool } from './create-project.ts'
+import { editSectionTool } from './edit-section.ts'
+import { generatePageTool } from './generate-page.ts'
 import { generateSectionTool } from './generate-section.ts'
+import { jobCancelTool, jobStatusTool, type MxpageJobsApi } from './job.ts'
 import { planPageTool } from './plan.ts'
 import { projectStatusTool } from './project-status.ts'
 import { refinePromptTool } from './refine-prompt.ts'
@@ -29,6 +32,7 @@ export interface MxpageToolsHost {
     }>
   }
   llm?: unknown
+  jobs: MxpageJobsApi
 }
 
 export interface RegisterMxpageToolsDeps {
@@ -70,6 +74,8 @@ export function registerMxpageTools(
     config,
     saveImage,
   })
+  const toolSaveImage = (input: { data: Uint8Array; mediaType: string; name?: string }) =>
+    ctx.attachments.saveImage(input)
   ctx.tools.register(createProjectTool({ store, storeRoot, config }))
   ctx.tools.register(addAssetTool({ store, storeRoot }))
   ctx.tools.register(projectStatusTool({ store }))
@@ -80,8 +86,26 @@ export function registerMxpageTools(
     store,
     storeRoot,
     config,
-    saveImage: (input) => ctx.attachments.saveImage(input),
+    saveImage: toolSaveImage,
     images: deps?.images,
     completeJson,
   }))
+  ctx.tools.register(generatePageTool({
+    store,
+    storeRoot,
+    config,
+    saveImage: toolSaveImage,
+    images: deps?.images,
+    completeJson,
+    jobs: ctx.jobs,
+  }))
+  ctx.tools.register(editSectionTool({
+    store,
+    storeRoot,
+    config,
+    saveImage: toolSaveImage,
+    images: deps?.images,
+  }))
+  ctx.tools.register(jobStatusTool({ store, jobs: ctx.jobs }))
+  ctx.tools.register(jobCancelTool({ jobs: ctx.jobs }))
 }

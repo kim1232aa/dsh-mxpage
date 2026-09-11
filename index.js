@@ -677,7 +677,7 @@ function parseProductAnalysis(value) {
 		suggestedSectionPlan: parseSuggested(obj.suggestedSectionPlan)
 	};
 }
-function fail$4(message) {
+function fail$5(message) {
 	throw new Error(redactSecrets(message));
 }
 function readU32BE(bytes, offset) {
@@ -734,12 +734,12 @@ function parseJpegSize(bytes) {
 	return null;
 }
 function readImageFile(absPath) {
-	if (statSync(absPath).size > 20971520) fail$4("image exceeds 20MiB");
+	if (statSync(absPath).size > 20971520) fail$5("image exceeds 20MiB");
 	const bytes = new Uint8Array(readFileSync(absPath));
-	if (bytes.byteLength > 20971520) fail$4("image exceeds 20MiB");
+	if (bytes.byteLength > 20971520) fail$5("image exceeds 20MiB");
 	const png = parsePngSize(bytes);
 	if (png) {
-		if (png.width > 8192 || png.height > 8192) fail$4("image edge exceeds 8192");
+		if (png.width > 8192 || png.height > 8192) fail$5("image edge exceeds 8192");
 		return {
 			bytes,
 			mediaType: "image/png"
@@ -747,17 +747,17 @@ function readImageFile(absPath) {
 	}
 	const jpeg = parseJpegSize(bytes);
 	if (jpeg) {
-		if (jpeg.width > 8192 || jpeg.height > 8192) fail$4("image edge exceeds 8192");
+		if (jpeg.width > 8192 || jpeg.height > 8192) fail$5("image edge exceeds 8192");
 		return {
 			bytes,
 			mediaType: "image/jpeg"
 		};
 	}
-	fail$4("unsupported image format");
+	fail$5("unsupported image format");
 }
 //#endregion
 //#region src/pipeline/analyze.ts
-function fail$3(error) {
+function fail$4(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -797,19 +797,19 @@ function markFailed$1(store, projectId) {
 async function analyzeProduct(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	if (signal.aborted) throw new Error("已取消");
-	if (!deps.completeJson) return fail$3(NO_VISION);
+	if (!deps.completeJson) return fail$4(NO_VISION);
 	const status = record.status;
-	if (status !== "created" && status !== "failed" && status !== "analyzing") return fail$3("MXPAGE_STATE");
+	if (status !== "created" && status !== "failed" && status !== "analyzing") return fail$4("MXPAGE_STATE");
 	if (status === "created" || status === "failed") try {
 		deps.store.write(record.id, { status: "analyzing" });
 	} catch {
-		return fail$3("MXPAGE_STATE");
+		return fail$4("MXPAGE_STATE");
 	}
 	try {
 		const images = loadProjectImages(record);
 		if (images.length === 0) {
 			markFailed$1(deps.store, record.id);
-			return fail$3(NO_VISION);
+			return fail$4(NO_VISION);
 		}
 		const user = buildProductAnalysisPrompt(record.assets.map((asset) => ({
 			role: asset.role,
@@ -825,7 +825,7 @@ async function analyzeProduct(deps, args, signal) {
 		});
 		if (!result.ok) {
 			markFailed$1(deps.store, record.id);
-			return fail$3(result.error);
+			return fail$4(result.error);
 		}
 		const analysisPath = assertInside(record.workspaceDir, join(record.workspaceDir, "analysis.json"));
 		writeFileSync(analysisPath, JSON.stringify(result.value, null, 2));
@@ -839,7 +839,7 @@ async function analyzeProduct(deps, args, signal) {
 	} catch (err) {
 		if (signal.aborted || err instanceof Error && err.message === "已取消") throw err instanceof Error ? err : /* @__PURE__ */ new Error("已取消");
 		markFailed$1(deps.store, record.id);
-		return fail$3(err instanceof Error ? err.message : String(err));
+		return fail$4(err instanceof Error ? err.message : String(err));
 	}
 }
 //#endregion
@@ -883,7 +883,7 @@ function analyzeProductTool(opts) {
 }
 //#endregion
 //#region src/tools/create-project.ts
-const LANGUAGES$1 = [
+const LANGUAGES$2 = [
 	"zh-CN",
 	"en",
 	"ja",
@@ -915,7 +915,7 @@ function createProjectTool(opts) {
 			},
 			language: {
 				type: "string",
-				enum: LANGUAGES$1,
+				enum: LANGUAGES$2,
 				description: "Content language"
 			},
 			aspect_ratio: {
@@ -980,7 +980,7 @@ const styleLabels = {
 	conversion_focused: "转化导向",
 	tech: "科技感"
 };
-const languageNames = {
+const languageNames$1 = {
 	"zh-CN": "Simplified Chinese",
 	en: "English",
 	ja: "Japanese",
@@ -1002,7 +1002,7 @@ function buildSectionPlanningPrompt(analysis, options) {
 	const language = options.language ?? "zh-CN";
 	const styleLabel = styleLabels[style] ?? style;
 	const platformLabel = platformLabels[platform] ?? platform;
-	const targetLanguage = languageNames[language] ?? languageNames["zh-CN"];
+	const targetLanguage = languageNames$1[language] ?? languageNames$1["zh-CN"];
 	const heroImageCount = options.heroCount;
 	const detailSectionCount = options.detailCount;
 	const planningContext = {
@@ -1187,7 +1187,7 @@ function parseSectionPlan(value) {
 }
 //#endregion
 //#region src/pipeline/plan.ts
-function fail$2(error) {
+function fail$3(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1253,10 +1253,10 @@ function markFailed(store, projectId) {
 async function planPage(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	if (signal.aborted) throw new Error("已取消");
-	if (record.status !== "analyzed" && record.status !== "planned") return fail$2("MXPAGE_STATE");
-	if (!deps.completeJson) return fail$2(NO_VISION);
+	if (record.status !== "analyzed" && record.status !== "planned") return fail$3("MXPAGE_STATE");
+	if (!deps.completeJson) return fail$3(NO_VISION);
 	const analysis = readAnalysisFile(record.workspaceDir);
-	if (!analysis) return fail$2("MXPAGE_STATE");
+	if (!analysis) return fail$3("MXPAGE_STATE");
 	const heroCount = clamp(args.heroCount, 1, 5, deps.config.defaultHeroCount);
 	const detailCount = clamp(args.detailCount, 1, 10, deps.config.defaultDetailCount);
 	const platform = args.platform === "xiaohongshu" ? "xiaohongshu" : "ecommerce";
@@ -1265,7 +1265,7 @@ async function planPage(deps, args, signal) {
 	try {
 		deps.store.write(record.id, { status: "planning" });
 	} catch {
-		return fail$2("MXPAGE_STATE");
+		return fail$3("MXPAGE_STATE");
 	}
 	try {
 		const user = buildSectionPlanningPrompt(analysis, {
@@ -1283,7 +1283,7 @@ async function planPage(deps, args, signal) {
 		});
 		if (!result.ok) {
 			markFailed(deps.store, record.id);
-			return fail$2(result.error);
+			return fail$3(result.error);
 		}
 		const sections = normalizeSections(result.value);
 		const visualStyleGuide = result.value.visualStyleGuide;
@@ -1311,7 +1311,7 @@ async function planPage(deps, args, signal) {
 	} catch (err) {
 		if (signal.aborted || err instanceof Error && err.message === "已取消") throw err instanceof Error ? err : /* @__PURE__ */ new Error("已取消");
 		markFailed(deps.store, record.id);
-		return fail$2(err instanceof Error ? err.message : String(err));
+		return fail$3(err instanceof Error ? err.message : String(err));
 	}
 }
 //#endregion
@@ -1436,7 +1436,7 @@ function parseVisualPrompt(value) {
 }
 //#endregion
 //#region src/pipeline/visual-prompt.ts
-function fail$1(error) {
+function fail$2(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1458,9 +1458,9 @@ function syntheticSection(sectionKey, productName) {
 async function refinePrompt(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	if (signal.aborted) throw new Error("已取消");
-	if (!deps.completeJson) return fail$1(NO_VISION);
+	if (!deps.completeJson) return fail$2(NO_VISION);
 	const analysis = readAnalysisFile(record.workspaceDir);
-	if (!analysis) return fail$1("MXPAGE_STATE");
+	if (!analysis) return fail$2("MXPAGE_STATE");
 	const plan = readPlanFile(record.workspaceDir);
 	const styleGuide = readStyleGuideFile(record.workspaceDir) ?? plan?.visualStyleGuide;
 	const section = plan?.sections.find((item) => item.sectionKey === args.sectionKey) ?? syntheticSection(args.sectionKey, analysis.productName);
@@ -1489,7 +1489,7 @@ async function refinePrompt(deps, args, signal) {
 			repairUser: buildVisualPromptRepairPrompt,
 			signal
 		});
-		if (!result.ok) return fail$1(result.error);
+		if (!result.ok) return fail$2(result.error);
 		const dir = assertInside(record.workspaceDir, join(record.workspaceDir, "prompts"));
 		mkdirSync(dir, { recursive: true });
 		const file = assertInside(record.workspaceDir, join(dir, `${args.sectionKey}.json`));
@@ -1504,13 +1504,13 @@ async function refinePrompt(deps, args, signal) {
 		};
 	} catch (err) {
 		if (signal.aborted || err instanceof Error && err.message === "已取消") throw err instanceof Error ? err : /* @__PURE__ */ new Error("已取消");
-		return fail$1(err instanceof Error ? err.message : String(err));
+		return fail$2(err instanceof Error ? err.message : String(err));
 	}
 }
 //#endregion
 //#region src/pipeline/generate.ts
 const MISSING_PROMPT = "missing prompt; call mxpage_refine_prompt or pass prompt_override";
-function fail(error) {
+function fail$1(error) {
 	return {
 		ok: false,
 		error: redactSecrets(error)
@@ -1571,7 +1571,7 @@ function defaultReferencePaths(record, max) {
 	if (hero && !paths.includes(hero)) paths.push(hero);
 	return paths.slice(0, max);
 }
-function toBlob$1(absPath) {
+function toBlob$2(absPath) {
 	const { bytes, mediaType } = readImageFile(absPath);
 	return {
 		bytes,
@@ -1580,13 +1580,13 @@ function toBlob$1(absPath) {
 	};
 }
 function loadReferences(storeRoot, record, config, referencePaths) {
-	return (referencePaths !== void 0 ? referencePaths.map((path) => assertInside(storeRoot, path)) : defaultReferencePaths(record, config.maxReferenceImages)).slice(0, config.maxReferenceImages).filter((path) => existsSync(path)).map(toBlob$1);
+	return (referencePaths !== void 0 ? referencePaths.map((path) => assertInside(storeRoot, path)) : defaultReferencePaths(record, config.maxReferenceImages)).slice(0, config.maxReferenceImages).filter((path) => existsSync(path)).map(toBlob$2);
 }
 async function generateSection(deps, args, signal) {
 	const record = deps.store.read(args.projectId);
 	let prompt = resolvePrompt(record.workspaceDir, args.sectionKey, args.promptOverride);
 	if (!prompt) {
-		if (!deps.completeJson) return fail(MISSING_PROMPT);
+		if (!deps.completeJson) return fail$1(MISSING_PROMPT);
 		const refined = await refinePrompt({
 			store: deps.store,
 			completeJson: deps.completeJson
@@ -1594,7 +1594,7 @@ async function generateSection(deps, args, signal) {
 			projectId: args.projectId,
 			sectionKey: args.sectionKey
 		}, signal);
-		if (!refined.ok) return fail(refined.error);
+		if (!refined.ok) return fail$1(refined.error);
 		prompt = refined.finalPrompt;
 	}
 	const model = args.model ?? deps.config.imageModel;
@@ -1624,6 +1624,177 @@ async function generateSection(deps, args, signal) {
 		mediaType: "image/png",
 		name: `${args.sectionKey}.png`
 	});
+	return {
+		ok: true,
+		projectId: record.id,
+		sectionKey: args.sectionKey,
+		outputPath,
+		attachmentId: ref.attachmentId,
+		modelUsed: model,
+		versionId
+	};
+}
+//#endregion
+//#region src/prompts/generation.ts
+const languageNames = {
+	"zh-CN": "Simplified Chinese",
+	en: "English",
+	ja: "Japanese",
+	ko: "Korean"
+};
+function buildReferenceText(referenceAssets) {
+	if (!referenceAssets.length) return "No reference images were provided.";
+	return `Reference roles: ${referenceAssets.map((item) => `${item.role}${item.isMain ? " (main)" : ""}`).join(" / ")}`;
+}
+function buildMainImageInstruction(referenceAssets) {
+	if (!referenceAssets.length) return "If no product image reference is provided, infer the product carefully from the structured analysis and keep the same product identity across all generated sections.";
+	return [
+		"The uploaded main product image is the source of truth for product identity.",
+		"主体与参考图一致：Keep the same product category, shape, material, color family, proportions, grid/layer structure, moving parts, and key recognisable details across every generated hero image and detail image.",
+		"Do not invent a different product.",
+		"Use the provided image as the visual anchor, then change composition, scene, angle, crop, lighting, and selling-point emphasis according to the section goal. Never replace the product with a similar-looking object or a generic prop."
+	].join(" ");
+}
+function buildAspectInstruction(aspectRatio) {
+	if (aspectRatio === "1:1") return "The final image must be a square 1:1 e-commerce hero composition, optimized for tappable product gallery covers.";
+	return aspectRatio === "3:4" ? "The final image must be a vertical 3:4 marketplace poster composition." : "The final image must be a vertical 9:16 long-form mobile commerce composition.";
+}
+function buildTargetLanguageInstruction(contentLanguage) {
+	const targetLanguage = languageNames[contentLanguage];
+	return [
+		`All user-facing marketing copy that appears inside the image must be written in ${targetLanguage}.`,
+		`The section title, key selling points, short supporting copy, disclaimers, and CTA should all be in ${targetLanguage} when they appear in the image.`,
+		"Do not mix in Simplified Chinese unless the target language is Simplified Chinese.",
+		"Keep the typography native, polished, and commercially readable for the target language.",
+		"避免乱码文字：in-image copy must be sharp, correctly spelled, with no garbled glyphs or stacked duplicates."
+	].join(" ");
+}
+function buildPhysicalRealityInstruction() {
+	return [
+		"Respect product physics and product-specific mechanical logic.",
+		"几何不可反转：preserve real openings, hinges, layer count, seams, buttons, handles and part direction; do not mirror or invert structure.",
+		"禁止逆风：airflow, liquid and heat may leave only through the real outlet; never blow backward from an intake.",
+		"Infer how the product actually works from the uploaded image and section goal: cable exit points, vents, nozzles, hinges, openings, drawers, buttons, handles, gravity, shadows, reflections, support surfaces, airflow, liquid flow, and user interaction direction.",
+		"Do not create impossible physical effects: reversed airflow, cords disappearing into furniture, floating unsupported products, hands passing through solid parts, liquids flowing upward, disconnected shadows, impossible reflections, text crossing through product geometry, or parts bending in a way the material cannot.",
+		"For hair dryers specifically, airflow must leave the front nozzle, the rear intake must not emit wind, and the power cord must connect naturally from the handle/base instead of merging into a desk or wall.",
+		"For Rubik cubes, speed cubes, puzzle cubes and other mechanical toys: preserve the correct cube order such as 3x3x3 when stated or visible, keep six square color faces, visible corner/edge/center piece logic, real twistable layer seams, rounded or straight tile style matching the reference, and do not turn it into a ruler, sticker sheet, generic storage box, electronics device, or unrelated block toy."
+	].join(" ");
+}
+function buildGenerationRequirementsInstruction(generationRequirements) {
+	const trimmed = generationRequirements?.trim();
+	if (!trimmed) return "No extra project-level image generation requirements were provided.";
+	return [
+		"Project-level image generation requirements from the user. Treat these as high-priority creative constraints for this image while still following the current section goal:",
+		trimmed,
+		"Operationalize these requirements concretely through camera angle, scene, props, product interaction, composition variation, and in-image copy. Do not ignore them or mention them only as abstract text."
+	].join("\n");
+}
+function buildSectionImagePrompt(section, referenceAssets = [], aspectRatio = "9:16", contentLanguage = "zh-CN", generationRequirements) {
+	return [
+		"You are a senior e-commerce key-visual designer creating marketplace-ready product artwork.",
+		`Section type: ${section.type}`,
+		`Section title: ${section.title}`,
+		`Section goal: ${section.goal}`,
+		`Section copy: ${section.copy}`,
+		`Visual prompt guidance: ${section.visualPrompt}`,
+		buildReferenceText(referenceAssets),
+		buildMainImageInstruction(referenceAssets),
+		buildAspectInstruction(aspectRatio),
+		buildTargetLanguageInstruction(contentLanguage),
+		buildGenerationRequirementsInstruction(generationRequirements),
+		buildPhysicalRealityInstruction(),
+		"Generate one high-conversion mobile e-commerce visual for this section.",
+		"The image should emphasize product clarity, composition hierarchy, material texture, and marketplace aesthetics.",
+		"The headline, selling points, supporting copy, and CTA should be visually designed inside the image rather than left for later DOM text insertion.",
+		"Make the result feel like finished commercial artwork, not a blank template."
+	].join("\n");
+}
+function buildImageEditPrompt(section, referenceAssets = [], mode = "repaint", aspectRatio = "9:16", contentLanguage = "zh-CN", generationRequirements) {
+	const targetLanguage = languageNames[contentLanguage];
+	const modeInstruction = mode === "translate" ? `This is an in-image translation task. Use the current image as the base and translate every visible user-facing word, headline, selling point, label, badge, CTA, note, and disclaimer into ${targetLanguage}. Preserve the original product, layout, composition, typography hierarchy, colors, lighting, and commercial style as much as possible. Do not add new claims or redesign the image except where text length requires natural typographic fitting. Remove the original-language text after replacing it with ${targetLanguage}. 避免乱码文字。` : mode === "enhance" ? "This is an enhancement task. Use the current image as the base, preserve the overall framing, and improve realism, texture, lighting, clarity, edge quality, and commercial polish." : "This is a repaint task. Use the current image as the base, keep the same product identity, and redesign the composition, atmosphere, styling, and conversion emphasis according to the section goal.";
+	return [
+		buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements),
+		modeInstruction,
+		"The current section image must be treated as the editable base image.",
+		"Keep the product identical to the uploaded main product image and do not replace it with a different item. 主体与参考图一致。",
+		mode === "translate" ? "Only change the in-image language. Do not translate invisible metadata, do not add subtitles outside the artwork, and do not leave bilingual duplicates unless the original design intentionally uses bilingual branding." : "",
+		"Output one marketplace-ready mobile e-commerce image only."
+	].filter(Boolean).join("\n");
+}
+//#endregion
+//#region src/pipeline/edit.ts
+function fail(error) {
+	return {
+		ok: false,
+		error: redactSecrets(error)
+	};
+}
+function toBlob$1(absPath) {
+	const { bytes, mediaType } = readImageFile(absPath);
+	return {
+		bytes,
+		mediaType,
+		filename: basename(absPath)
+	};
+}
+function tryStatus$1(store, projectId, status) {
+	try {
+		store.write(projectId, { status });
+	} catch {}
+}
+async function editSection(deps, args, signal) {
+	const record = deps.store.read(args.projectId);
+	if (signal.aborted) throw new Error("已取消");
+	const projectDir = record.workspaceDir;
+	const outputPath = assertInside(projectDir, join(projectDir, "output", `${args.sectionKey}.png`));
+	if (!existsSync(outputPath)) return fail("MXPAGE_NOT_FOUND");
+	const section = readPlanFile(projectDir)?.sections.find((item) => item.sectionKey === args.sectionKey);
+	const generation = {
+		type: section?.type ?? (args.sectionKey.startsWith("hero_") ? "hero" : "custom"),
+		title: section?.title ?? args.sectionKey,
+		goal: section?.goal ?? args.instruction ?? "",
+		copy: section?.copy ?? "",
+		visualPrompt: section?.visualPrompt ?? args.instruction ?? ""
+	};
+	const aspectRatio = generation.type === "hero" ? "1:1" : record.aspectRatio === "9:16" ? "9:16" : record.aspectRatio === "3:4" ? "3:4" : "3:4";
+	const contentLanguage = args.mode === "translate" ? args.targetLanguage ?? record.language : record.language;
+	const analysis = readAnalysisFile(projectDir);
+	let prompt = buildImageEditPrompt(generation, [{
+		role: "output",
+		isMain: false
+	}, {
+		role: "main",
+		isMain: true
+	}], args.mode, aspectRatio, contentLanguage, analysis?.generationRequirements);
+	if (args.instruction?.trim()) prompt = `${prompt}\nUser instruction: ${args.instruction.trim()}`;
+	const image = toBlob$1(outputPath);
+	const references = [image];
+	if (record.mainAssetPath && existsSync(record.mainAssetPath)) references.push(toBlob$1(record.mainAssetPath));
+	tryStatus$1(deps.store, record.id, "editing");
+	const model = args.model ?? deps.config.imageModel;
+	const size = args.size ?? "1024x1024";
+	const generated = await deps.images.edit({
+		prompt,
+		size,
+		model,
+		image,
+		references,
+		signal
+	});
+	if (signal.aborted) throw new Error("已取消");
+	const versionId = nextVersionId(projectDir, args.sectionKey);
+	const versionDir = assertInside(projectDir, join(projectDir, "versions", args.sectionKey));
+	mkdirSync(versionDir, { recursive: true });
+	const versionPath = assertInside(projectDir, join(versionDir, `${versionId}.png`));
+	const buf = Buffer.from(generated.bytes);
+	writeFileSync(outputPath, buf);
+	writeFileSync(versionPath, buf);
+	const ref = await deps.saveImage({
+		data: generated.bytes,
+		mediaType: "image/png",
+		name: `${args.sectionKey}.png`
+	});
+	tryStatus$1(deps.store, record.id, "generated");
 	return {
 		ok: true,
 		projectId: record.id,
@@ -1743,6 +1914,504 @@ function createImagesClient(opts) {
 			return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, [input.image, ...input.references]) }, input.signal);
 		}
 	};
+}
+//#endregion
+//#region src/tools/edit-section.ts
+const SIZES$1 = ["1024x1024", "1024x1536"];
+const MODES$1 = [
+	"repaint",
+	"enhance",
+	"translate"
+];
+const LANGUAGES$1 = [
+	"zh-CN",
+	"en",
+	"ja",
+	"ko"
+];
+const MISSING_KEY$2 = "未配置图像 API Key（环境变量 MXPAGE_IMAGE_API_KEY）";
+const textRender$2 = (_args, value) => [{
+	type: "text",
+	text: JSON.stringify(value, null, 2)
+}];
+function editSectionTool(opts) {
+	return defineTool({
+		name: "mxpage_edit_section",
+		description: "Edit an existing section image (repaint / enhance / translate). Writes a new versions/<key>/vN.png and updates output/<key>.png; older version files are kept. instruction required for repaint/enhance; target_language required for translate.",
+		parameters: {
+			project_id: {
+				type: "string",
+				required: true,
+				description: "Existing mxpage project id"
+			},
+			section_key: {
+				type: "string",
+				required: true,
+				description: "e.g. hero_01"
+			},
+			mode: {
+				type: "string",
+				enum: MODES$1,
+				required: true,
+				description: "repaint, enhance, or translate"
+			},
+			instruction: {
+				type: "string",
+				description: "Required for repaint and enhance"
+			},
+			target_language: {
+				type: "string",
+				enum: LANGUAGES$1,
+				description: "Required for translate"
+			},
+			size: {
+				type: "string",
+				enum: SIZES$1,
+				description: "Output size; default 1024x1024"
+			},
+			model: {
+				type: "string",
+				description: "Image model override"
+			}
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: textRender$2
+		},
+		timeoutMs: 18e4,
+		isConcurrencySafe: () => false,
+		execute: async (args, exec) => {
+			const mode = args.mode;
+			if (mode === "translate" && !args.target_language) return {
+				ok: false,
+				error: "MXPAGE_MISSING_LANGUAGE"
+			};
+			if ((mode === "repaint" || mode === "enhance") && !args.instruction?.trim()) return {
+				ok: false,
+				error: redactSecrets("请提供 instruction")
+			};
+			const images = resolveImages$2(opts.config, opts.images);
+			if (images === void 0) return {
+				ok: false,
+				error: MISSING_KEY$2
+			};
+			return editSection({
+				store: opts.store,
+				storeRoot: opts.storeRoot,
+				config: opts.config,
+				images,
+				saveImage: opts.saveImage
+			}, {
+				projectId: args.project_id,
+				sectionKey: args.section_key,
+				mode,
+				instruction: args.instruction,
+				targetLanguage: args.target_language,
+				size: args.size,
+				model: args.model
+			}, exec.signal);
+		}
+	});
+}
+function resolveImages$2(config, injected) {
+	if (injected) return injected;
+	const apiKey = process.env[config.imageApiKeyEnv];
+	if (!apiKey) return void 0;
+	return createImagesClient({
+		baseUrl: config.imageBaseUrl,
+		apiKey
+	});
+}
+//#endregion
+//#region src/tools/job.ts
+const liveJobs = /* @__PURE__ */ new Map();
+function progressPath(projectDir, jobId) {
+	const safeId = basename(jobId);
+	if (safeId !== jobId || jobId.includes("..")) throw new Error(`path escapes project root: ${jobId}`);
+	const dir = assertInside(projectDir, join(projectDir, "tasks"));
+	return assertInside(projectDir, join(dir, `${safeId}.json`));
+}
+function registerLiveJob(jobId, rec) {
+	liveJobs.set(jobId, rec);
+}
+function getLiveJob(jobId) {
+	return liveJobs.get(jobId);
+}
+function writeJobProgress(projectDir, jobId, data) {
+	const dir = assertInside(projectDir, join(projectDir, "tasks"));
+	mkdirSync(dir, { recursive: true });
+	const file = progressPath(projectDir, jobId);
+	const progress = Math.min(1, Math.max(0, data.progress));
+	const payload = {
+		state: data.state,
+		progress,
+		currentSection: data.currentSection
+	};
+	if (data.error) payload.error = redactSecrets(data.error);
+	writeFileSync(file, JSON.stringify(payload));
+}
+function readJobProgress(projectDir, jobId) {
+	const file = progressPath(projectDir, jobId);
+	if (!existsSync(file)) return void 0;
+	try {
+		const raw = JSON.parse(readFileSync(file, "utf8"));
+		if (!raw || typeof raw !== "object") return void 0;
+		const state = raw.state;
+		if (state !== "running" && state !== "stopping" && state !== "completed" && state !== "killed" && state !== "failed") return void 0;
+		return {
+			state,
+			progress: typeof raw.progress === "number" ? raw.progress : 0,
+			currentSection: typeof raw.currentSection === "string" ? raw.currentSection : "",
+			...typeof raw.error === "string" ? { error: raw.error } : {}
+		};
+	} catch {
+		return;
+	}
+}
+const textRender$1 = (_args, value) => [{
+	type: "text",
+	text: JSON.stringify(value, null, 2)
+}];
+function jobStatusTool(opts) {
+	return defineTool({
+		name: "mxpage_job_status",
+		description: "Read mxpage background job progress (state, progress 0–1, currentSection). Pass job_id from mxpage_generate_page.",
+		parameters: {
+			job_id: {
+				type: "string",
+				required: true,
+				description: "Job id returned by mxpage_generate_page"
+			},
+			project_id: {
+				type: "string",
+				description: "Optional project id to locate tasks/<jobId>.json"
+			}
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: textRender$1
+		},
+		execute: async (args, exec) => {
+			const jobId = args.job_id;
+			const live = getLiveJob(jobId);
+			let file;
+			if (live) file = readJobProgress(live.projectDir, jobId);
+			else if (args.project_id) try {
+				file = readJobProgress(opts.store.read(args.project_id).workspaceDir, jobId);
+			} catch {
+				file = void 0;
+			}
+			let snapshot;
+			try {
+				snapshot = opts.jobs?.get?.(jobId, exec.agent);
+			} catch {
+				snapshot = void 0;
+			}
+			if (!file && !snapshot) return {
+				ok: false,
+				error: "MXPAGE_NOT_FOUND"
+			};
+			const error = file?.error ?? snapshot?.detail;
+			return {
+				ok: true,
+				state: snapshot?.status ?? file?.state ?? "running",
+				progress: file?.progress ?? 0,
+				currentSection: file?.currentSection ?? "",
+				...error ? { error } : {}
+			};
+		}
+	});
+}
+function jobCancelTool(opts) {
+	return defineTool({
+		name: "mxpage_job_cancel",
+		description: "Cancel an mxpage page job. Completed section files are kept. Pass job_id from mxpage_generate_page.",
+		parameters: {
+			job_id: {
+				type: "string",
+				required: true,
+				description: "Job id returned by mxpage_generate_page"
+			},
+			reason: {
+				type: "string",
+				description: "Optional cancel reason"
+			}
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: textRender$1
+		},
+		execute: async (args, exec) => {
+			const jobId = args.job_id;
+			const live = getLiveJob(jobId);
+			live?.abort.abort(args.reason);
+			if (live) {
+				const prev = readJobProgress(live.projectDir, jobId);
+				writeJobProgress(live.projectDir, jobId, {
+					state: "stopping",
+					progress: prev?.progress ?? 0,
+					currentSection: prev?.currentSection ?? "",
+					...prev?.error ? { error: prev.error } : {}
+				});
+			}
+			let result = live ? "requested" : "already-finished";
+			if (opts.jobs?.kill) try {
+				result = opts.jobs.kill(jobId, exec.agent, args.reason);
+			} catch {}
+			return {
+				ok: true,
+				jobId,
+				result
+			};
+		}
+	});
+}
+//#endregion
+//#region src/tools/generate-page.ts
+const PAGE_KIND = "mxpage_page";
+const MISSING_KEY$1 = "未配置图像 API Key（环境变量 MXPAGE_IMAGE_API_KEY）";
+const textRender = (_args, value) => [{
+	type: "text",
+	text: JSON.stringify(value, null, 2)
+}];
+function abortError(message = "已取消") {
+	const err = new Error(message);
+	err.name = "AbortError";
+	return err;
+}
+function isAbortErr(err, signal) {
+	if (signal?.aborted) return true;
+	if (!err || typeof err !== "object") return false;
+	const rec = err;
+	return rec.name === "AbortError" || rec.message === "已取消";
+}
+function tryStatus(store, projectId, status) {
+	try {
+		store.write(projectId, { status });
+	} catch {}
+}
+function resolveImages$1(config, injected) {
+	if (injected) return injected;
+	const apiKey = process.env[config.imageApiKeyEnv];
+	if (!apiKey) return void 0;
+	return createImagesClient({
+		baseUrl: config.imageBaseUrl,
+		apiKey
+	});
+}
+async function withSectionLock(locks, key, fn) {
+	const prev = locks.get(key) ?? Promise.resolve();
+	let release;
+	const curr = new Promise((resolve) => {
+		release = resolve;
+	});
+	locks.set(key, prev.then(() => curr, () => curr));
+	try {
+		await prev.catch(() => void 0);
+		await fn();
+	} finally {
+		release();
+	}
+}
+async function runPool(keys, limit, signal, worker) {
+	if (keys.length === 0) return;
+	const conc = Math.max(1, limit);
+	let index = 0;
+	let failed;
+	const runWorker = async () => {
+		while (true) {
+			if (signal.aborted) throw abortError();
+			if (failed) return;
+			const i = index++;
+			if (i >= keys.length) return;
+			try {
+				await worker(keys[i]);
+			} catch (err) {
+				failed = err;
+				throw err;
+			}
+		}
+	};
+	const results = await Promise.allSettled(Array.from({ length: Math.min(conc, keys.length) }, () => runWorker()));
+	if (signal.aborted) throw abortError();
+	const rejected = results.find((result) => result.status === "rejected");
+	if (rejected) throw rejected.reason;
+}
+async function runPageJob(deps, args, jobId, signal) {
+	const projectDir = deps.store.read(args.projectId).workspaceDir;
+	let lastProgress = 0;
+	const persist = (state, progress, currentSection, error) => {
+		lastProgress = progress;
+		writeJobProgress(projectDir, jobId, {
+			state,
+			progress,
+			currentSection,
+			...error ? { error } : {}
+		});
+	};
+	persist("running", 0, "");
+	const locks = /* @__PURE__ */ new Map();
+	try {
+		if (signal.aborted) throw abortError();
+		const rec = deps.store.read(args.projectId);
+		if (!(Boolean(readAnalysisFile(rec.workspaceDir)) || rec.status === "analyzed" || rec.status === "planned" || rec.status === "generating" || rec.status === "generated")) {
+			persist("running", .05, "analyze");
+			const analyzed = await analyzeProduct({
+				store: deps.store,
+				completeJson: deps.completeJson
+			}, { projectId: args.projectId }, signal);
+			if (!analyzed.ok) throw new Error(analyzed.error);
+		}
+		persist("running", .1, "analyze");
+		if (signal.aborted) throw abortError();
+		const planExisting = readPlanFile(deps.store.read(args.projectId).workspaceDir);
+		if (!Boolean(planExisting && planExisting.sections.length > 0)) {
+			persist("running", .12, "plan");
+			const planned = await planPage({
+				store: deps.store,
+				config: deps.config,
+				completeJson: deps.completeJson
+			}, { projectId: args.projectId }, signal);
+			if (!planned.ok) throw new Error(planned.error);
+		}
+		persist("running", .2, "plan");
+		const latest = deps.store.read(args.projectId);
+		const plan = readPlanFile(latest.workspaceDir);
+		if (!plan || plan.sections.length === 0) throw new Error("MXPAGE_STATE");
+		const outputDir = join(latest.workspaceDir, "output");
+		const requested = args.sectionKeys;
+		const selected = requested?.length ? plan.sections.filter((section) => requested.includes(section.sectionKey)) : plan.sections.filter((section) => !existsSync(join(outputDir, `${section.sectionKey}.png`)));
+		const heroes = selected.filter((section) => section.type === "hero" || section.sectionKey.startsWith("hero_"));
+		const details = selected.filter((section) => !heroes.includes(section));
+		const total = heroes.length + details.length;
+		let completed = 0;
+		if (latest.status !== "generating") tryStatus(deps.store, latest.id, "generating");
+		const generateOne = async (sectionKey) => {
+			await withSectionLock(locks, sectionKey, async () => {
+				if (signal.aborted) throw abortError();
+				persist("running", total === 0 ? .2 : .2 + .8 * (completed / total), sectionKey);
+				const result = await generateSection({
+					store: deps.store,
+					storeRoot: deps.storeRoot,
+					config: deps.config,
+					images: deps.images,
+					saveImage: deps.saveImage,
+					completeJson: deps.completeJson
+				}, {
+					projectId: args.projectId,
+					sectionKey
+				}, signal);
+				if (!result.ok) throw new Error(result.error);
+				completed += 1;
+				persist("running", total === 0 ? 1 : .2 + .8 * (completed / total), sectionKey);
+			});
+		};
+		const parallel = deps.config.maxParallelSections || 2;
+		await runPool(heroes.map((section) => section.sectionKey), parallel, signal, generateOne);
+		if (signal.aborted) throw abortError();
+		await runPool(details.map((section) => section.sectionKey), parallel, signal, generateOne);
+		tryStatus(deps.store, args.projectId, "generated");
+		persist("completed", 1, "");
+	} catch (err) {
+		const aborted = isAbortErr(err, signal);
+		persist(aborted ? "killed" : "failed", lastProgress, "", redactSecrets(err instanceof Error ? err.message : String(err)));
+		if (!aborted) tryStatus(deps.store, args.projectId, "failed");
+		if (aborted) throw abortError(err instanceof Error ? err.message : "已取消");
+		throw err instanceof Error ? err : new Error(String(err));
+	}
+}
+function generatePageTool(opts) {
+	return defineTool({
+		name: "mxpage_generate_page",
+		description: "Generate a full ecommerce detail page (analyze → plan → all heroes → details). Uses a background job and consumes image API quota. Default section_keys are planned modules without output/<key>.png. Returns { kind: \"background\", jobId }.",
+		parameters: {
+			project_id: {
+				type: "string",
+				required: true,
+				description: "Existing mxpage project id"
+			},
+			section_keys: {
+				type: "array",
+				items: { type: "string" },
+				description: "Optional subset of section keys; default is planned sections missing output/<key>.png"
+			}
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: textRender
+		},
+		timeoutMs: 18e4,
+		isConcurrencySafe: () => false,
+		execute: async (args, exec) => {
+			const images = resolveImages$1(opts.config, opts.images);
+			if (images === void 0) return {
+				ok: false,
+				error: MISSING_KEY$1
+			};
+			if (!opts.jobs?.start) throw new Error("请加载 @deepseek-ai/dsh-jobs");
+			if (exec.signal.aborted) throw abortError();
+			let record;
+			try {
+				record = opts.store.read(args.project_id);
+			} catch {
+				return {
+					ok: false,
+					error: "MXPAGE_NOT_FOUND"
+				};
+			}
+			const ac = new AbortController();
+			const projectId = args.project_id;
+			const sectionKeys = args.section_keys;
+			const pageDeps = {
+				store: opts.store,
+				storeRoot: opts.storeRoot,
+				config: opts.config,
+				images,
+				saveImage: opts.saveImage,
+				completeJson: opts.completeJson
+			};
+			let assignedId = "";
+			const work = Promise.resolve().then(() => runPageJob(pageDeps, {
+				projectId,
+				sectionKeys
+			}, assignedId, ac.signal));
+			const jobId = opts.jobs.start({
+				kind: PAGE_KIND,
+				label: `mxpage page ${projectId}`,
+				...exec.agent ? { owner: exec.agent } : {},
+				run: () => ({
+					cancel: (reason) => ac.abort(reason),
+					done: work.then(() => ({ status: "completed" }), (err) => {
+						return {
+							status: isAbortErr(err, ac.signal) ? "killed" : "failed",
+							detail: redactSecrets(String(err instanceof Error ? err.message : err))
+						};
+					})
+				})
+			});
+			assignedId = jobId;
+			registerLiveJob(jobId, {
+				projectDir: record.workspaceDir,
+				abort: ac
+			});
+			return {
+				kind: "background",
+				jobId
+			};
+		}
+	});
 }
 //#endregion
 //#region src/tools/generate-section.ts
@@ -2004,6 +2673,7 @@ function registerMxpageTools(ctx, config, deps) {
 		config,
 		saveImage
 	});
+	const toolSaveImage = (input) => ctx.attachments.saveImage(input);
 	ctx.tools.register(createProjectTool({
 		store,
 		storeRoot,
@@ -2031,10 +2701,31 @@ function registerMxpageTools(ctx, config, deps) {
 		store,
 		storeRoot,
 		config,
-		saveImage: (input) => ctx.attachments.saveImage(input),
+		saveImage: toolSaveImage,
 		images: deps?.images,
 		completeJson
 	}));
+	ctx.tools.register(generatePageTool({
+		store,
+		storeRoot,
+		config,
+		saveImage: toolSaveImage,
+		images: deps?.images,
+		completeJson,
+		jobs: ctx.jobs
+	}));
+	ctx.tools.register(editSectionTool({
+		store,
+		storeRoot,
+		config,
+		saveImage: toolSaveImage,
+		images: deps?.images
+	}));
+	ctx.tools.register(jobStatusTool({
+		store,
+		jobs: ctx.jobs
+	}));
+	ctx.tools.register(jobCancelTool({ jobs: ctx.jobs }));
 }
 //#endregion
 //#region src/index.ts

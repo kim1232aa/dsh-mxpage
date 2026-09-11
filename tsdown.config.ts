@@ -10,6 +10,7 @@ export default defineConfig({
   sourcemap: false,
   external: [
     '@deepseek-ai/cordis',
+    '@deepseek-ai/dsh-jobs',
     '@deepseek-ai/dsh-llm',
     '@deepseek-ai/dsh-tools',
     '@deepseek-ai/schemastery',
