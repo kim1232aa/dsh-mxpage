@@ -1,0 +1,6 @@
+- insert:
+    - id: mxpage
+      name: dsh-mxpage
+      config:
+        imageModel: gpt-image-2
+        defaultLanguage: zh-CN

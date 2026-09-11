@@ -1,0 +1,25 @@
+{
+  "name": "dsh-mxpage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "skills"],
+  "scripts": {
+    "build": "tsdown",
+    "test": "node --experimental-strip-types --test test/**/*.test.ts"
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "file:../../dsh-runtime/node_modules/@deepseek-ai/cordis",
+    "@deepseek-ai/dsh-tools": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-tools",
+    "@deepseek-ai/schemastery": "file:../../dsh-runtime/node_modules/@deepseek-ai/schemastery",
+    "tsdown": "^0.12.0",
+    "typescript": "^5.8.0"
+  }
+}

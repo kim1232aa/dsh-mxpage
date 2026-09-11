@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "paths": {
+      "@deepseek-ai/cordis": ["../../dsh-runtime/node_modules/@deepseek-ai/cordis"],
+      "@deepseek-ai/dsh-tools": ["../../dsh-runtime/node_modules/@deepseek-ai/dsh-tools"],
+      "@deepseek-ai/schemastery": ["../../dsh-runtime/node_modules/@deepseek-ai/schemastery"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "tsdown.config.ts"]
+}
