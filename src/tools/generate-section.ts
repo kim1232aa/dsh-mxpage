@@ -2,6 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Config } from '../config.ts'
 import { generateSection } from '../pipeline/generate.ts'
 import { createImagesClient, type ImageSize, type ImagesClient } from '../provider/openai-images.ts'
+import type { CompleteJson } from '../provider/vision-text.ts'
 import type { ProjectStore } from '../service/project-store.ts'
 
 const SIZES = ['1024x1024', '1024x1536'] as const
@@ -18,6 +19,7 @@ export function generateSectionTool(opts: {
     name?: string
   }) => Promise<{ attachmentId: string }>
   images?: ImagesClient
+  completeJson?: CompleteJson
 }) {
   return defineTool({
     name: 'mxpage_generate_section',
@@ -47,6 +49,7 @@ export function generateSectionTool(opts: {
           config: opts.config,
           images,
           saveImage: opts.saveImage,
+          completeJson: opts.completeJson,
         },
         {
           projectId: args.project_id,

@@ -79,7 +79,7 @@ function setup(
   return { tmp, saved, tools, fixture, byName }
 }
 
-test('registers the four P1 mxpage_* tools and never generate_image', (t) => {
+test('registers the mxpage_* tools and never generate_image', (t) => {
   const { tools } = setup(t, {
     images: {
       generate: async () => ({ bytes: new Uint8Array(PNG), mediaType: 'image/png' }),
@@ -88,7 +88,7 @@ test('registers the four P1 mxpage_* tools and never generate_image', (t) => {
   })
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ['mxpage_add_asset', 'mxpage_create_project', 'mxpage_generate_section', 'mxpage_project_status'],
+    ['mxpage_add_asset', 'mxpage_analyze_product', 'mxpage_create_project', 'mxpage_generate_section', 'mxpage_plan_page', 'mxpage_project_status', 'mxpage_refine_prompt'],
   )
   assert.ok(!tools.some((tool) => /generate_image|image_generate/i.test(tool.name)))
   const generate = tools.find((tool) => tool.name === 'mxpage_generate_section')!

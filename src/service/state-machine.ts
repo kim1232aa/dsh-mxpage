@@ -14,7 +14,7 @@ const TRANSITIONS: Record<STATUS, readonly STATUS[]> = {
   analyzing: ['analyzed', 'failed'],
   analyzed: ['planning', 'failed'],
   planning: ['planned', 'failed'],
-  planned: ['generating', 'editing', 'failed'],
+  planned: ['planning', 'generating', 'editing', 'failed'],
   generating: ['generated', 'failed'],
   generated: ['editing', 'generating', 'failed'],
   editing: ['generated', 'failed'],

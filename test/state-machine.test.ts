@@ -23,6 +23,7 @@ const LEGAL: Array<[STATUS, STATUS]> = [
   ['analyzed', 'failed'],
   ['planning', 'planned'],
   ['planning', 'failed'],
+  ['planned', 'planning'],
   ['planned', 'generating'],
   ['planned', 'editing'],
   ['planned', 'failed'],

@@ -1,0 +1,20 @@
+export const VALID_ANALYSIS = {
+  productName: '三阶磁力魔方',
+  category: '益智玩具',
+  subcategory: '竞速魔方',
+  material: 'ABS 塑料',
+  color: '六色贴纸',
+  styleTags: ['竞速', '磁力'],
+  targetAudience: ['速拧爱好者'],
+  usageScenarios: ['比赛', '日常练习'],
+  coreSellingPoints: ['磁力定位', '转角切'],
+  differentiationPoints: ['磁力和力度可调'],
+  userConcerns: ['手感是否跟手', '是否爆弹'],
+  recommendedFocusPoints: ['磁力结构', '转层缝隙'],
+  additionalInformation: '3x3x3，六色面，角棱心结构。',
+  generationRequirements: '多角度展示转层与磁力。',
+  suggestedSectionPlan: [
+    { type: 'hero', title: '主视觉', goal: '建立商品记忆点' },
+    { type: 'selling_points', title: '卖点', goal: '讲清磁力优势' },
+  ],
+}

@@ -7,5 +7,7 @@ export const inject = ['tools', 'attachments', 'jobs']
 export { Config }
 
 export function apply(ctx: Context, config: MxpageConfig) {
-  registerMxpageTools(ctx as never, config)
+  registerMxpageTools(ctx as never, config, {
+    llm: (ctx as { llm?: unknown }).llm,
+  })
 }

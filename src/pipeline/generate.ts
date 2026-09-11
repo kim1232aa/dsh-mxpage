@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { basename, join } from 'node:path'
 import type { Config } from '../config.ts'
 import type { ImageBlob, ImageSize, ImagesClient } from '../provider/openai-images.ts'
+import type { CompleteJson } from '../provider/vision-text.ts'
 import type { ProjectRecord, ProjectStore } from '../service/project-store.ts'
 import { readImageFile } from '../util/images.ts'
 import { assertInside } from '../util/paths.ts'
 import { redactSecrets } from '../util/redact.ts'
+import { refinePrompt } from './visual-prompt.ts'
 
 const MISSING_PROMPT = 'missing prompt; call mxpage_refine_prompt or pass prompt_override'
 
@@ -47,6 +49,7 @@ export interface GenerateSectionDeps {
     mediaType: 'image/png'
     name?: string
   }) => Promise<{ attachmentId: string }>
+  completeJson?: CompleteJson
 }
 
 function fail(error: string): GenerateSectionFail {
@@ -152,7 +155,15 @@ export async function generateSection(
   signal: AbortSignal,
 ): Promise<GenerateSectionResult> {
   const record = deps.store.read(args.projectId)
-  const prompt = resolvePrompt(record.workspaceDir, args.sectionKey, args.promptOverride)
+  let prompt = resolvePrompt(record.workspaceDir, args.sectionKey, args.promptOverride)
+  if (!prompt && deps.completeJson) {
+    const refined = await refinePrompt(
+      { store: deps.store, completeJson: deps.completeJson },
+      { projectId: args.projectId, sectionKey: args.sectionKey },
+      signal,
+    )
+    if (refined.ok) prompt = refined.finalPrompt
+  }
   if (!prompt) return fail(MISSING_PROMPT)
 
   const model = args.model ?? deps.config.imageModel
