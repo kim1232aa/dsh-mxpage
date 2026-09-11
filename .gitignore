@@ -1,0 +1,7 @@
+node_modules/
+.superpowers/
+*.tgz
+.env
+.env.*
+coverage/
+dist-tmp/

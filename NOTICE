@@ -1,0 +1,14 @@
+dsh-mxpage
+==========
+
+This plugin ports prompts, JSON schemas, and the analyze → plan → Visual
+Prompt Agent → section-generate pipeline from:
+
+  MxPage (灵矩绘境)
+  https://github.com/ziguishian/MxPage
+  MIT License, Copyright (c) 2026 灵矩绘境
+
+It is NOT an official DeepSeek product and is NOT affiliated with DeepSeek AI.
+
+DeepSeek Harness is MIT, Copyright (c) 2026 DeepSeek:
+  https://github.com/deepseek-ai/deepseek-harness
