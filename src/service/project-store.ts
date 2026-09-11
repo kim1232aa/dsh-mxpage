@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, extname, join, resolve } from 'node:path'
 import { assertInside } from '../util/paths.ts'
 import { assertTransition, type STATUS } from './state-machine.ts'
 
@@ -43,6 +43,18 @@ function assertExistingFile(path: string): void {
   }
 }
 
+function uniqueBasename(dir: string, name: string): string {
+  const ext = extname(name)
+  const stem = basename(name, ext)
+  let candidate = name
+  let n = 1
+  while (existsSync(join(dir, candidate))) {
+    candidate = `${stem}-${n}${ext}`
+    n += 1
+  }
+  return candidate
+}
+
 export function createStore(rootDir: string): ProjectStore {
   function projectDir(projectId: string): string {
     return assertInside(rootDir, join(rootDir, 'projects', projectId))
@@ -56,8 +68,9 @@ export function createStore(rootDir: string): ProjectStore {
 
   function copyIntoAssets(dir: string, absImagePath: string): string {
     assertExistingFile(absImagePath)
-    mkdirSync(join(dir, 'assets'), { recursive: true })
-    const dest = assertInside(dir, join(dir, 'assets', basename(absImagePath)))
+    const assetsDir = join(dir, 'assets')
+    mkdirSync(assetsDir, { recursive: true })
+    const dest = assertInside(dir, join(assetsDir, uniqueBasename(assetsDir, basename(absImagePath))))
     copyFileSync(absImagePath, dest)
     return dest
   }
@@ -115,8 +128,13 @@ export function createStore(rootDir: string): ProjectStore {
       throw new Error('max 10 assets')
     }
     const dest = copyIntoAssets(projectDir(projectId), absImagePath)
+    if (role === 'main') {
+      for (const asset of rec.assets) {
+        if (asset.role === 'main') asset.role = 'reference'
+      }
+      rec.mainAssetPath = dest
+    }
     rec.assets.push({ path: dest, role })
-    if (role === 'main') rec.mainAssetPath = dest
     persist(rec)
     return rec
   }

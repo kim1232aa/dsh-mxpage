@@ -20,6 +20,7 @@ function withStore(t: TestContext) {
   t.after(() => rmSync(tmp, { recursive: true, force: true }))
   return {
     rootDir,
+    tmp,
     store: createStore(rootDir),
     png(name: string) {
       const p = join(srcDir, name)
@@ -84,6 +85,66 @@ test('role=main required to replace main', (t) => {
   const replaced = store.addAsset(rec.id, png('new-main.png'), 'main')
   assert.notEqual(replaced.mainAssetPath, orig)
   assert.equal(basename(replaced.mainAssetPath), 'new-main.png')
+})
+
+test('addAsset role=main demotes previous main to reference', (t) => {
+  const { store, png } = withStore(t)
+  const rec = store.create({ imagePaths: [png('main.png'), png('other.png')] })
+  const orig = rec.mainAssetPath
+  assert.equal(rec.assets.filter((a) => a.role === 'main').length, 1)
+
+  const replaced = store.addAsset(rec.id, png('new-main.png'), 'main')
+  const mains = replaced.assets.filter((a) => a.role === 'main')
+  assert.equal(mains.length, 1, 'exactly one asset keeps role main')
+  assert.equal(mains[0]?.path, replaced.mainAssetPath)
+  assert.equal(basename(replaced.mainAssetPath), 'new-main.png')
+
+  const previous = replaced.assets.find((a) => a.path === orig)
+  assert.ok(previous)
+  assert.equal(previous.role, 'reference')
+
+  const reread = store.read(rec.id)
+  assert.equal(reread.assets.filter((a) => a.role === 'main').length, 1)
+  assert.equal(reread.assets.find((a) => a.role === 'main')?.path, reread.mainAssetPath)
+  assert.equal(reread.assets.find((a) => a.path === orig)?.role, 'reference')
+})
+
+test('duplicate basename gets unique dest and does not overwrite', (t) => {
+  const { store, tmp } = withStore(t)
+  const dirA = join(tmp, 'a')
+  const dirB = join(tmp, 'b')
+  mkdirSync(dirA)
+  mkdirSync(dirB)
+  const bytesA = Buffer.from('asset-a')
+  const bytesB = Buffer.from('asset-b')
+  const srcA = join(dirA, 'foo.png')
+  const srcB = join(dirB, 'foo.png')
+  writeFileSync(srcA, bytesA)
+  writeFileSync(srcB, bytesB)
+
+  const rec = store.create({ imagePaths: [srcA, srcB] })
+  const paths = rec.assets.map((a) => a.path)
+  assert.equal(new Set(paths).size, 2, 'assets[] paths are distinct')
+  assert.equal(basename(paths[0]!), 'foo.png')
+  assert.equal(basename(paths[1]!), 'foo-1.png')
+  assert.ok(existsSync(paths[0]!))
+  assert.ok(existsSync(paths[1]!))
+  assert.ok(readFileSync(paths[0]!).equals(bytesA), 'first dest not overwritten')
+  assert.ok(readFileSync(paths[1]!).equals(bytesB))
+  assert.equal(basename(rec.mainAssetPath), 'foo.png')
+
+  const dirC = join(tmp, 'c')
+  mkdirSync(dirC)
+  const bytesC = Buffer.from('asset-c')
+  const srcC = join(dirC, 'foo.png')
+  writeFileSync(srcC, bytesC)
+  const added = store.addAsset(rec.id, srcC, 'angle')
+  const addedPaths = added.assets.map((a) => a.path)
+  assert.equal(new Set(addedPaths).size, 3)
+  assert.equal(basename(added.assets[2]!.path), 'foo-2.png')
+  for (const p of addedPaths) assert.ok(existsSync(p))
+  assert.ok(readFileSync(paths[0]!).equals(bytesA), 'main dest still intact')
+  assert.ok(readFileSync(added.assets[2]!.path).equals(bytesC))
 })
 
 test('traversal of dest throws', (t) => {
