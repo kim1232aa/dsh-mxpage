@@ -30,13 +30,21 @@ adapter is **thin**, and the upstream **UI is in scope**.
 ```
 src/core/     host-agnostic port of upstream lib/   (never imports @deepseek-ai/*)
    └── ports/   Repository · ProviderResolver · Logger · StorageDriver · TaskRunner
-src/host/     the five port implementations (JSON repository, fs storage, channels)
+src/host/     the five port implementations (JSON repository, fs storage, channels,
+              jobs-backed task runner)
+src/shared/   route paths shared by host and browser
 src/tools/    thin mxpage_* wrappers over core services
 src/client/   the browser panel
 ```
 
 `src/core/**` cannot import `@deepseek-ai/*`, `schemastery`, Next.js, Prisma or
 React, and cannot touch `process.cwd()` / `process.env` — enforced by a test.
+
+Long-running work goes through **`ctx.jobs`** (`@deepseek-ai/dsh-jobs-local`),
+so the shell owns job identity, session scoping, lifecycle state, completion
+notices and owner-disposal cancellation. `src/host/task-runner.ts` is the
+fallback for hosts without a registry — the plugin still boots either way,
+because `jobs` is read through the optional `ctx.get('jobs')` accessor.
 
 Why the extraction was cheap, with evidence:
 

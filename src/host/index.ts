@@ -30,6 +30,7 @@ import { createFileLogger } from './logger.ts'
 import { createProviderResolver } from './provider-resolver.ts'
 import { createJsonRepository } from './repository.ts'
 import { createFileStorageDriver } from './storage-driver.ts'
+import { createJobsTaskRunner, type JobsRegistryLike } from './jobs-task-runner.ts'
 import { createQueuedTaskRunner } from './task-runner.ts'
 
 export interface MxpageRuntime {
@@ -55,17 +56,34 @@ export function resolveStoreRoot(config: Config): string {
   return join(process.env.DSH_HOME ?? homedir(), 'mxpage')
 }
 
-export function createMxpageRuntime(config: Config): MxpageRuntime {
+export function createMxpageRuntime(
+  config: Config,
+  options: {
+    /** The DSH host job registry (`ctx.jobs`), when the profile provides one. */
+    jobs?: JobsRegistryLike
+    /** Live agent that owns jobs, resolved at call time. */
+    resolveOwner?: () => unknown
+  } = {},
+): MxpageRuntime {
   const storeRoot = resolveStoreRoot(config)
 
   const logger = createFileLogger({ ledgerDir: storeRoot })
   const repository = createJsonRepository({ file: join(storeRoot, 'db.json') })
   const storage = createFileStorageDriver(storeRoot)
   const provider = createProviderResolver({ config, logger })
-  const runner = createQueuedTaskRunner({
-    repository,
-    concurrency: Math.max(1, config.maxParallelSections),
-  })
+  // Prefer the host job registry: the shell then owns job identity, session
+  // scoping, lifecycle, completion notices and owner-disposal cancellation.
+  // The local queue is the fallback for hosts without a `jobs` service.
+  const runner = options.jobs
+    ? createJobsTaskRunner({
+        jobs: options.jobs,
+        repository,
+        resolveOwner: options.resolveOwner,
+      })
+    : createQueuedTaskRunner({
+        repository,
+        concurrency: Math.max(1, config.maxParallelSections),
+      })
 
   const host: Required<CoreHost> = { repository, storage, provider, logger, tasks: runner }
 

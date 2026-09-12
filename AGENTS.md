@@ -19,11 +19,20 @@ The plugin is a thin host adapter over `src/core/` (see `src/core/README.md`).
 
 - Export `name` + `apply`. Never `export default function apply`.
 - `inject` is a **string array of host service names actually provided by the
-  runtime**, e.g. `['tools', 'attachments', 'webServer', 'systemPrompt', 'commands']`.
-  Verify a name exists before adding it — `@deepseek-ai/dsh-jobs` is **not** a
-  real package. Background work is owned by the plugin (see
-  `src/core/ports/tasks.ts`), exactly as `@dickpy/dsh-imagegen` does with its
-  in-process `GenerationTaskQueue`.
+  runtime**. Verified from `dsh --profile desktop --dump-config`: `webServer`,
+  `tools`, `attachments` and `jobs` all exist (`jobs` is provided by
+  `@deepseek-ai/dsh-jobs-local` in `dsh-base`).
+- **Background work goes through `ctx.jobs`** (`@deepseek-ai/dsh-jobs`), which
+  owns job identity, session-scoped access, lifecycle state, completion
+  notices and owner-disposal cancellation. `src/host/jobs-task-runner.ts` is the
+  implementation; `src/host/task-runner.ts` is the fallback for hosts without a
+  registry. Custom kinds require declaration merging on `JobKindMap`.
+  Three registry rules that are silent when broken: `run()` returns hooks
+  **synchronously** (it is not an async work fn), `hooks.done` must **never
+  reject**, and `hooks.cancel` must be synchronous and idempotent.
+- `jobs` is read via the optional `ctx.get('jobs')` accessor rather than put in
+  the fiber `inject` list, so a host without a registry degrades gracefully
+  instead of failing the plugin boot.
 - `Config` is a Schemastery schema (interface + const), imported from
   **`schemastery`** — not `@deepseek-ai/schemastery`.
 - Tools come from `defineTool` in `@deepseek-ai/dsh-tools` and are registered

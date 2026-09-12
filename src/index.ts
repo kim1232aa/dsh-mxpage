@@ -1,6 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the webServer Context merge (ctx.webServer.register).
 import type {} from '@deepseek-ai/dsh-host-webserver'
+// Type-only: merges `mxpage_page` into JobKindMap and declares ctx.jobs.
+import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 
 import { Config, type Config as MxpageConfig } from './config.ts'
 import { createMxpageRuntime } from './host/index.ts'
@@ -16,9 +18,10 @@ export const name = 'mxpage'
  * `export const inject = ['webServer','systemPrompt','commands']`):
  * `tools`, `attachments` and `webServer` are real service names.
  *
- * `jobs` is deliberately absent — `@deepseek-ai/dsh-jobs` is not a real package.
- * Background work is owned by the plugin's own queued TaskRunner, exactly as
- * `dsh-imagegen` owns its in-process `GenerationTaskQueue`.
+ * `jobs` is deliberately NOT in the fiber `inject` list even though it exists
+ * (`@deepseek-ai/dsh-jobs-local` in dsh-base): a missing job registry must
+ * degrade to the plugin's own queue rather than fail the plugin boot, so it is
+ * read through the optional `ctx.get('jobs')` accessor instead.
  */
 export const inject = ['webServer']
 
@@ -29,7 +32,27 @@ function imageUrlFor(relPath: string): string {
 }
 
 export function apply(ctx: Context, config: MxpageConfig): void {
-  const runtime = createMxpageRuntime(config)
+  // Optional: the host job registry. Present in the official profiles; absent
+  // in stripped ones, where the runtime falls back to its own queue.
+  let jobs: JobRegistry | undefined
+  try {
+    jobs = ctx.get('jobs') as JobRegistry | undefined
+  } catch {
+    jobs = undefined
+  }
+
+  const runtime = createMxpageRuntime(config, {
+    jobs,
+    // Jobs are fenced by the owning agent's session id; the live agent is read
+    // at call time because it differs per turn.
+    resolveOwner: () => {
+      try {
+        return ctx.get('agent') ?? undefined
+      } catch {
+        return undefined
+      }
+    },
+  })
 
   // Model-facing surface.
   ctx.inject(['tools', 'attachments'], (tctx) => {
