@@ -40,10 +40,10 @@ test('plugin exports name + apply, not a default function', async () => {
   assert.equal(typeof mod.apply, 'function')
   assert.equal(mod.default, undefined)
   assert.ok(mod.Config)
-  // `webServer` is the only fiber-level requirement: the panel's data API needs
-  // it at apply time. `tools` and `attachments` are pulled per-effet through
-  // ctx.inject so the plugin still boots when a surface is missing.
-  assert.deepEqual(mod.inject, ['webServer'])
+  // EMPTY on purpose: a fiber-level inject that a profile cannot satisfy leaves
+  // the plugin pending forever and the host refuses to boot (verified against
+  // the headless profile). Surfaces are acquired per-effect instead.
+  assert.deepEqual(mod.inject, [])
 })
 
 test('every registered tool is mxpage_* and never shadows dsh-imagegen', () => {

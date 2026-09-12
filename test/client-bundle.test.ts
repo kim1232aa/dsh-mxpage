@@ -231,3 +231,81 @@ function registration0(registrations: Registration[]): Registration {
   assert.ok(first)
   return first
 }
+
+// ---------------------------------------------------------------------------
+// INCIDENT REGRESSION: the panel CSS must never be able to blank the whole
+// app.
+//
+// A prior version's stylesheet included
+//   html[data-dsh-mxpage-active] CENTRE_COLUMN > *:not(PANEL) { display: none !important; }
+// which fires from the CSS alone, independent of whether the panel's own host
+// element actually mounted. When the centre-column selector failed to match
+// the live shell, `sync()` still set the active attribute, and every sibling
+// in the conversation column vanished with nothing rendered in its place —
+// reported in production as "the whole main area goes black, only the
+// sidebar still works". Fixed by removing any rule that reaches outside the
+// panel's own selector; the panel now covers the conversation only via its
+// own absolutely positioned, opaque host element.
+// ---------------------------------------------------------------------------
+
+test('the injected stylesheet never hides anything outside the panel selector', async (t) => {
+  if (!existsSync(bundlePath)) {
+    t.skip('lib/client.js missing — run `npm run build`')
+    return
+  }
+  const restore = installDomStub()
+  try {
+    const createdStyleElements: Array<{ textContent: string }> = []
+    const globals = globalThis as unknown as Record<string, unknown>
+    const document = globals.document as {
+      createElement: (tag: string) => Record<string, unknown>
+      head: { append: (node: unknown) => void }
+    }
+    const originalCreateElement = document.createElement
+    document.createElement = (tag: string) => {
+      const element = originalCreateElement(tag)
+      if (tag === 'style') {
+        createdStyleElements.push(element as unknown as { textContent: string })
+      }
+      return element
+    }
+
+    const nodeRequire = createRequire(import.meta.url)
+    const { registrations } = await loadClientBundle()
+    const exports = registration0(registrations).factory((specifier) => {
+      if (specifier.startsWith('react')) return nodeRequire(specifier)
+      throw new Error(`unexpected ${specifier}`)
+    })
+
+    let effectCleanup: (() => void) | undefined
+    const ctx = {
+      get: () => undefined,
+      effect(callback: () => (() => void) | void) {
+        effectCleanup = callback() ?? undefined
+      },
+      inject() {},
+      tools: { register: () => () => {} },
+      slots: { inject() {}, register: () => () => {} },
+    }
+    ;(exports.apply as (ctx: unknown) => void)(ctx)
+
+    assert.ok(createdStyleElements.length > 0, 'the panel must inject a stylesheet')
+    for (const style of createdStyleElements) {
+      const css = style.textContent
+      assert.doesNotMatch(
+        css,
+        /!important/,
+        'no rule in the injected stylesheet may use !important (that is what let it override sibling visibility from CSS alone)',
+      )
+      assert.doesNotMatch(
+        css,
+        />\s*\*\s*:not\(/,
+        'no rule may target ">*: not(...)" — that shape is exactly what hid every sibling in the conversation column',
+      )
+    }
+
+    effectCleanup?.()
+  } finally {
+    restore()
+  }
+})

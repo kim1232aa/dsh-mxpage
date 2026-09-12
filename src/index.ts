@@ -12,18 +12,25 @@ import { registerMxpageTools } from './tools/register.ts'
 export const name = 'mxpage'
 
 /**
- * Host services this plugin needs. Verified against a working plugin
- * (`@dickpy/dsh-imagegen`, which does
- * `ctx.inject(['tools','attachments','commands'], …)` and
- * `export const inject = ['webServer','systemPrompt','commands']`):
- * `tools`, `attachments` and `webServer` are real service names.
+ * **Empty on purpose.**
  *
- * `jobs` is deliberately NOT in the fiber `inject` list even though it exists
- * (`@deepseek-ai/dsh-jobs-local` in dsh-base): a missing job registry must
- * degrade to the plugin's own queue rather than fail the plugin boot, so it is
- * read through the optional `ctx.get('jobs')` accessor instead.
+ * A fiber-level `inject` gates the plugin's own activation. Listing a service a
+ * profile does not provide leaves the plugin `pending` forever, and the host
+ * reports `plugin tree failed to load: dsh: 1 entry did not activate` and
+ * refuses to boot. Verified the hard way: `inject = ['webServer']` broke the
+ * `headless` profile outright.
+ *
+ * So the plugin activates everywhere and acquires each surface through
+ * `ctx.inject([...], cb)`, which creates a *child* fiber that waits without
+ * blocking the parent. A profile without `webServer` gets no panel API and one
+ * without `tools`/`attachments` gets no tools — never a failed boot.
+ *
+ * `jobs` is read through the optional `ctx.get('jobs')` accessor rather than an
+ * injection, because a missing registry must degrade to the plugin's own queue.
+ * `ctx.get(name)` is non-strict by default and resolves to `undefined` instead
+ * of throwing when the service is absent.
  */
-export const inject = ['webServer']
+export const inject: string[] = []
 
 export { Config }
 
@@ -54,7 +61,7 @@ export function apply(ctx: Context, config: MxpageConfig): void {
     },
   })
 
-  // Model-facing surface.
+  // Model-facing surface. Absent services mean no tools, not a failed boot.
   ctx.inject(['tools', 'attachments'], (tctx) => {
     tctx.effect(() => {
       const disposers = registerMxpageTools(tctx as never, config, runtime)
@@ -72,11 +79,14 @@ export function apply(ctx: Context, config: MxpageConfig): void {
 
   // Human-facing surface: the browser panel's data API. Loopback-fenced inside
   // the handlers, so a remote browser gets an explanatory 403 rather than data.
-  const webServer = ctx.get('webServer') as
-    | { register: (route: unknown) => () => void }
-    | undefined
-  if (webServer?.register) {
-    ctx.effect(() => {
+  // Only web-ish profiles provide a webserver; a headless profile simply skips
+  // this child fiber.
+  ctx.inject(['webServer'], (wctx) => {
+    wctx.effect(() => {
+      const webServer = wctx.get('webServer') as
+        | { register: (route: unknown) => () => void }
+        | undefined
+      if (!webServer?.register) return () => {}
       const disposers = makeMxpageRoutes({
         runtime,
         config,
@@ -92,5 +102,5 @@ export function apply(ctx: Context, config: MxpageConfig): void {
         }
       }
     })
-  }
+  })
 }

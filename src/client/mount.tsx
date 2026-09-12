@@ -4,13 +4,24 @@
  * The `conversation` slot is single-occupant and external plugins cannot declare
  * slots, so the panel takes over the centre column at the DOM level: a container
  * is appended inside the conversation grid item (an extra trailing child React
- * never manages), and a stylesheet rule hides the conversation content while the
- * panel is active. Toggling is a data attribute on `<html>`, so the conversation
- * subtree underneath stays mounted and stateful.
+ * never manages). Toggling is the container's own `display`, driven by a data
+ * attribute on `<html>` so cross-panel exclusivity and the sidebar toggle stay
+ * in sync — but nothing else in the DOM is touched.
  *
- * Same approach as `@dickpy/dsh-imagegen`'s `mount.tsx`; the dual selector covers
- * both the legacy shell (`[data-pane="conversation"]`) and the rc.6+ AppFrame
- * layout (`[class*="centerCol"]`).
+ * INCIDENT (fixed here): an earlier version additionally forced every sibling
+ * in the centre column to `display:none!important` while the panel was active,
+ * on the theory that the panel's own `position:absolute` cover was not enough.
+ * That rule fires from the CSS alone, independent of whether the panel's host
+ * element actually mounted. When `conversationColumn()` failed to resolve
+ * (selector mismatch against a shell version, or called before the frame
+ * finished rendering), `ensure()` bailed out with no host created, but `sync()`
+ * ran anyway and still set the active attribute — blanking the entire
+ * conversation column with nothing to show in its place. Reported in production
+ * as "the whole main area goes black, only the sidebar still works". Fixed by
+ * removing the sibling-hiding rule entirely: the panel's own opaque, absolutely
+ * positioned, z-indexed host is sufficient to cover the conversation when it is
+ * actually mounted, and a mount failure now degrades to "the panel doesn't
+ * appear" rather than "the app goes black".
  */
 
 import { createRoot, type Root } from 'react-dom/client'
@@ -30,6 +41,10 @@ const OTHER_ACTIVE_ATTRS = ['data-dsh-imagegen-active', 'data-dsh-taskboard-acti
 
 const STYLE_ID = 'dsh-mxpage-panel-style'
 
+/**
+ * Only the panel's OWN visibility is CSS-driven. There is deliberately no rule
+ * that reaches outside `PANEL_SELECTOR` — see the incident note above.
+ */
 const STYLESHEET = `
 ${PANEL_SELECTOR} {
   position: absolute;
@@ -39,7 +54,6 @@ ${PANEL_SELECTOR} {
   background: #0f1115;
 }
 html[${ACTIVE_ATTR}] ${PANEL_SELECTOR} { display: block; }
-html[${ACTIVE_ATTR}] ${CONVERSATION_COLUMN_SELECTOR} > *:not(${PANEL_SELECTOR}) { display: none !important; }
 ${CONVERSATION_COLUMN_SELECTOR} { position: relative; }
 `
 
@@ -76,9 +90,15 @@ export function mountPanel(): PanelHandle {
   let root: Root | undefined
   let open = false
 
+  /**
+   * Reflects `open` onto the DOM. Guarded: the active attribute is only ever
+   * set when a real host element exists, so a failed mount cannot blank
+   * anything — worst case the toggle silently does nothing.
+   */
   const sync = (): void => {
     const html = document.documentElement
-    if (open) {
+    const canShow = open && host !== undefined
+    if (canShow) {
       // Exclusive activation: another panel's attribute would fight ours.
       for (const attr of OTHER_ACTIVE_ATTRS) html.removeAttribute(attr)
       html.setAttribute(ACTIVE_ATTR, '')
@@ -88,7 +108,7 @@ export function mountPanel(): PanelHandle {
     }
     const toggle = document.querySelector<HTMLElement>(TOGGLE_SELECTOR)
     if (toggle !== null) {
-      if (open) toggle.dataset.active = ''
+      if (canShow) toggle.dataset.active = ''
       else delete toggle.dataset.active
     }
   }
@@ -105,15 +125,33 @@ export function mountPanel(): PanelHandle {
     host.dataset.dshMxpageView = ''
     column.append(host)
     root = createRoot(host)
-    root.render(<MxpagePanel api={api} onClose={() => handle.close()} />)
+  }
+
+  /** Renders (or re-renders) the panel tree. Never lets a render error escape. */
+  const render = (): void => {
+    if (root === undefined) return
+    try {
+      root.render(<MxpagePanel api={api} onClose={() => handle.close()} />)
+    } catch (error) {
+      console.warn('[dsh-mxpage] panel render failed, closing:', error)
+      open = false
+      sync()
+    }
   }
 
   const handle: PanelHandle = {
     open() {
       open = true
       ensure()
+      if (host === undefined) {
+        // The centre column was not found (wrong shell version, or called too
+        // early). Do not set the active attribute — nothing exists to show.
+        console.warn('[dsh-mxpage] could not locate the conversation column; panel not shown.')
+        open = false
+        return
+      }
       sync()
-      root?.render(<MxpagePanel api={api} onClose={() => handle.close()} />)
+      render()
     },
     close() {
       open = false
@@ -135,7 +173,19 @@ export function mountPanel(): PanelHandle {
 
   // Self-heal after React rebuilds the shell.
   const observer = new MutationObserver(() => {
-    if (open) ensure()
+    if (!open) return
+    const hadHost = host !== undefined
+    ensure()
+    if (host === undefined) {
+      // The column disappeared and could not be re-found: fail safe rather
+      // than leaving a stale active attribute with nothing behind it.
+      if (hadHost) {
+        open = false
+        sync()
+      }
+      return
+    }
+    if (!hadHost) render()
   })
   observer.observe(document.body, { childList: true, subtree: true })
 

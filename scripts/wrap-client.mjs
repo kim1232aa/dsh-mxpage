@@ -60,6 +60,10 @@ const wrapped = `window.__ModuleLoader__.load({
 \t\tvar module = { exports: {} };
 \t\tvar exports = module.exports;
 \t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+\t\t// The web shell has no Node \`process\` global; the bundled react-dom
+\t\t// development branch checks read process.env.NODE_ENV. Shim it so the
+\t\t// factory never throws "process is not defined" in the browser.
+\t\tvar process = { env: { NODE_ENV: "production" } };
 ${body
   .split('\n')
   .map((line) => (line.length > 0 ? `\t\t${line}` : line))

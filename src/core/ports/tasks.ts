@@ -50,7 +50,22 @@ export interface TaskRunner {
   start<T>(spec: TaskSpec<T>): TaskHandle
   /** Looks up a live handle by id, when the runner retains them. */
   get?(id: string): TaskHandle | undefined
+  /**
+   * The job's lifecycle as the HOST sees it.
+   *
+   * Deliberately separate from `get()`: a returned handle does NOT imply the job
+   * is still running. A live end-to-end run caught exactly that mistake —
+   * `mxpage_job_status` treated "handle exists" as "running" and reported
+   * `running` forever, including after cancellation and after completion.
+   */
+  status?(id: string): TaskState
 }
+
+/**
+ * Host-visible lifecycle of a job, mirroring `@deepseek-ai/dsh-jobs`'s
+ * `JobStatus`. `unknown` means the host has no record of that id.
+ */
+export type TaskState = 'running' | 'stopping' | 'completed' | 'failed' | 'killed' | 'unknown'
 
 /** Cooperative-cancellation gate used between pipeline steps. */
 export class TaskCanceledError extends Error {

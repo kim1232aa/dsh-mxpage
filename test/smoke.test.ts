@@ -111,7 +111,9 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
     })
 
     assert.ok(mock.effectRan(), 'apply must register through ctx.effect')
-    assert.deepEqual(mock.injected, [['tools', 'attachments']])
+    // Both surfaces are acquired through child fibers, so the plugin itself
+    // never blocks on a service the profile may not provide.
+    assert.deepEqual(mock.injected, [['tools', 'attachments'], ['webServer']])
 
     const names = mock.registered.map((tool) => tool.name).sort()
     assert.deepEqual(names, [
