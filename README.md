@@ -2,152 +2,235 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-**DeepSeek Harness plugin** that ports [MxPage](https://github.com/ziguishian/MxPage)'s ecommerce image pipeline into the official DSH **`web`** profile:
+**DeepSeek Harness plugin** that brings [MxPage](https://github.com/ziguishian/MxPage)'s
+ecommerce product-image workbench into the official DSH **`web`** profile:
 
-**register photos → analyze selling points → plan hero/detail sections → Visual Prompt Agent → generate frames**
+**register photos → analyze selling points → plan hero/detail sections → Visual Prompt Agent → generate → edit → export**
 
-This is **not** a generic gallery. Community plugins such as `dsh-imagegen` / `image-generate` / `image_generate` register a one-shot `generate_image` (or similar) tool. **dsh-mxpage does not.** Every tool is named `mxpage_*`. The model must walk **analyze → plan → VPA → section generate** so a product photo becomes a coherent detail-page set, not a pile of unrelated images.
+This is **not** a generic gallery, and it is **not** a thin prompt wrapper.
+Community plugins such as `dsh-imagegen` register a one-shot `generate_image`.
+**dsh-mxpage does not.** Every tool is named `mxpage_*`, and the model must walk
+**analyze → plan → VPA → generate** so a product photo becomes a coherent
+detail-page set rather than a pile of unrelated images.
 
-Verified against **`@deepseek-ai/dsh@0.1.5-rc.1`**. Requires the official **`web`** profile (not `sdk-minimal`).
+Verified against **DSH `0.1.2-rc.1`** host packages. Requires the official
+**`web`** profile (not `sdk-minimal`).
 
-**Not an official DeepSeek product.** Not affiliated with DeepSeek AI. MxPage prompts/schemas remain MIT (灵矩绘境); see [NOTICE](./NOTICE).
+**Not an official DeepSeek product.** Not affiliated with DeepSeek AI.
+MxPage prompts/schemas remain MIT (灵矩绘境); see [NOTICE](./NOTICE).
+
+---
+
+## Architecture — "换芯留壳"
+
+v0.1 reimplemented MxPage's pipeline by hand and threw away the parts that make
+it a product. v0.2 inverts that: the upstream **kernel is ported**, the DSH
+adapter is **thin**, and the upstream **UI is in scope**.
+
+```
+src/core/     host-agnostic port of upstream lib/   (never imports @deepseek-ai/*)
+   └── ports/   Repository · ProviderResolver · Logger · StorageDriver · TaskRunner
+src/host/     the five port implementations (JSON repository, fs storage, channels)
+src/tools/    thin mxpage_* wrappers over core services
+src/client/   the browser panel
+```
+
+`src/core/**` cannot import `@deepseek-ai/*`, `schemastery`, Next.js, Prisma or
+React, and cannot touch `process.cwd()` / `process.env` — enforced by a test.
+
+Why the extraction was cheap, with evidence:
+
+| Fact | Evidence |
+|---|---|
+| Zero `next/*` imports inside upstream `lib/` | the one exception, `provider-runtime.ts`, imported `NextRequest` solely to read two headers |
+| `@prisma/client` appears 9 times | two are type-only; four use only the `Prisma` namespace |
+| The 1344-line OpenAI adapter had **one** hard coupling | `import { inferCategory, logApiUsage } from "@/lib/monitor/api-usage"` |
+
+See [`src/core/README.md`](src/core/README.md) for the full seam list.
+
+---
+
+## Configuration — channels, not an env var
+
+v0.1 required `MXPAGE_IMAGE_API_KEY`. v0.2 uses a **channel list**, so several
+endpoints can be configured and rotated:
+
+**设置 → 插件 → MxPage → 渠道**, or in `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: mxpage
+      name: dsh-mxpage
+      config:
+        channels:
+          - id: xai
+            label: xAI (Grok)
+            baseUrl: https://api.example.com/v1
+            apiKeyEnv: MXPAGE_XAI_KEY   # preferred: keeps the secret out of the doc
+            models: [grok-imagine-image-2.0]
+            textModel: grok-4
+            imageModel: grok-imagine-image-2.0
+        rotateChannelOnQuotaExhausted: true
+```
+
+| Field | Meaning |
+|---|---|
+| `id` / `label` | rotation key and display name |
+| `baseUrl` | OpenAI-compatible base URL; a missing `/v1` is retried automatically |
+| `apiKey` / `apiKeyEnv` | literal secret, or (preferred) the **name** of an env var |
+| `models` | explicit image model ids; leave empty to discover via `GET /models` |
+| `textModel` / `imageModel` | preferred models for analyze+plan / generate on this channel |
+| `disabled` | skip this channel without deleting it |
+
+Run **`mxpage_channels`** first whenever something fails — it reports which
+channel is active, its catalog, and whether any image-capable model was found.
+
+> **Model capability is inferred from the model name.** Upstream deliberately
+> skips real endpoint probing to avoid burning image quota, so "the name looks
+> like an image model" does not prove the gateway can render images. A gateway
+> that advertises a model it cannot serve is discovered by *failing*.
+
+---
 
 ## Paid Images API — read this first
 
-Generation and edit tools call an **OpenAI-compatible Images API** (`/v1/images/generations`, `/v1/images/edits`). That API is **paid**. Each `mxpage_generate_section`, `mxpage_generate_page`, and `mxpage_edit_section` consumes quota. The ecommerce skill will remind the model to warn you before a whole-page job.
+Generation and edit tools call an **OpenAI-compatible Images API**
+(`/images/generations`, `/images/edits`). That API is **paid**. Each
+`mxpage_generate_section`, `mxpage_generate_page` and `mxpage_edit_section`
+consumes quota. The shipped skills instruct the model to confirm with you before
+a whole-page job.
 
-Set the key in the environment only:
+Secrets never appear in tool output, logs or session events — `sk-` and `Bearer`
+tokens are redacted (`src/util/redact.ts`).
 
-```sh
-export MXPAGE_IMAGE_API_KEY=sk-...   # example — use your real key locally, never paste it here
-```
-
-**Never** put the key in chat, git, `cordis.patch.yml`, tool arguments, browser storage, or session events. The plugin reads `process.env[config.imageApiKeyEnv]` (default env **name**: `MXPAGE_IMAGE_API_KEY`). Logs and tool output redact `sk-` / `Bearer` tokens.
-
-If the host only exposes `/chat/completions` (no `/images/*`), the client falls back to chat and extracts the image (including markdown `data:image/...;base64`). JPEG/WebP bytes are sniffed so `saveImage` declares the matching media type.
-
-Optional quota backup (used only after the primary returns 额度/429):
-
-```sh
-export MXPAGE_IMAGE_FALLBACK_BASE_URL=http://127.0.0.1:8787/v1
-export MXPAGE_IMAGE_FALLBACK_API_KEY=sk-...
-```
+---
 
 ## Install
 
-Must target the **`web`** profile:
-
 ```sh
-dsh plugin --profile web add <path-or-spec>
+# from a checkout
+dsh plugin add link:/absolute/path/to/mxpage
+
+# or from the built tarball
+dsh plugin add ./dsh-mxpage-0.2.0.tgz
 ```
 
-Examples:
+`dsh plugin add` registers the bundle in the profile's
+`dsh.profile.bundles` for you. Then configure a channel (above) and restart the
+profile so the layer loads.
 
-```sh
-# GitHub spec
-dsh plugin --profile web add github:kim1232aa/dsh-mxpage
+### Skills catalog
 
-# Local path (this workspace)
-dsh plugin --profile web add /workspace/dsh-plugins/dsh-mxpage
-
-# Built tarball
-dsh plugin --profile web add ./dsh-mxpage-0.1.0.tgz
-```
-
-Then set `MXPAGE_IMAGE_API_KEY` (see above). Restart the `web` profile so the new layer loads.
-
-After add, `dsh --profile web --dump-config` must still show **all three** layers: `dsh-mxpage` **and** `@deepseek-ai/dsh-web-app` **and** `@deepseek-ai/dsh-base`. Do not switch the profile to `sdk-minimal`.
-
-### Skills catalog (filesystem)
-
-DSH's official web catalog scans **`$DSH_HOME/skills`**, not the package's `skills/` directory. After `plugin add`, copy the packaged skills so the catalog sees them (this is not a DSH source patch):
+The skills ship inside the package. Copy them next to the DSH catalog so they
+are discoverable:
 
 ```sh
 mkdir -p "${DSH_HOME:-$HOME/.dsh}/skills"
-cp -R skills/mxpage-ecommerce-page \
-      skills/mxpage-xiaohongshu \
-      skills/mxpage-batch-sku \
+cp -R skills/mxpage-ecommerce-page skills/mxpage-xiaohongshu skills/mxpage-batch-sku \
       "${DSH_HOME:-$HOME/.dsh}/skills/"
 ```
 
+---
+
 ## Chat example
 
-Attach a product photo (or point at a workspace path) and say:
+Attach a product photo and say:
 
 > 根据这张商品图出一套淘宝详情页
 
-Expected: the agent runs create → analyze → plan → generate, and you get **≥1 hero + ≥3 detail** images as session attachments **and** workspace files under `$DSH_HOME/mxpage/projects/<id>/`.
+Expected: the agent runs create → analyze → plan → generate and you get a hero
+set plus detail sections, each as a **new version** (never overwriting), stored
+under `$DSH_HOME/mxpage/projects/<projectId>/` and returned as attachments.
 
-## Tools (`mxpage_*` only)
+---
 
-No `generate_image` / `image_generate` / `image-generate`.
+## Tools (all `mxpage_*`)
 
 | Tool | Role |
-|------|------|
-| `mxpage_create_project` | Create a project from workspace `image_paths` and/or chat `attachment_ids` (1–10 combined; copy, do not move) |
-| `mxpage_add_asset` | Append a photo via `image_path` or `attachment_id`; replacing the main image requires explicit `role=main` |
-| `mxpage_project_status` | Read-only state machine / sections / job |
-| `mxpage_analyze_product` | Vision analysis → `analysis.json` |
-| `mxpage_plan_page` | Hero/detail plan + style guide (refuses if not analyzed) |
-| `mxpage_refine_prompt` | Visual Prompt Agent for one section |
-| `mxpage_generate_section` | Generate one frame; runs VPA unless `prompt_override` is set |
-| `mxpage_generate_page` | Orchestrate the whole page (default: background job) |
-| `mxpage_edit_section` | `repaint` / `enhance` / `translate` (new version; never overwrites) |
-| `mxpage_job_status` | Poll a page job |
-| `mxpage_job_cancel` | Cancel a running job; completed sections stay on disk |
-| `mxpage_export_page` | List output paths or write `output/export-<iso>.zip` |
+|---|---|
+| `mxpage_create_project` | New project from 1–10 photos via `attachment_ids` (chat) and/or `image_paths` |
+| `mxpage_add_asset` | Append a photo; `role: "main"` swaps the primary reference |
+| `mxpage_project_status` | Read-only: analysis, sections, versions, running tasks |
+| `mxpage_analyze_product` | Vision analysis → category, materials, selling points, suggested plan |
+| `mxpage_plan_page` | Section plan + project-level `visualStyleGuide`. **Re-planning deletes existing sections and images** |
+| `mxpage_generate_section` | One frame; runs the VPA unless `prompt_override` is set |
+| `mxpage_edit_section` | `repaint` / `enhance` / `translate`; new version, never overwrites |
+| `mxpage_generate_page` | Whole page as a background job; `mode: "missing"` fills gaps only |
+| `mxpage_job_status` / `mxpage_job_cancel` | Job control; completed sections stay on disk |
+| `mxpage_export_page` | ZIP (`00-头图/` + `01-详情页/` + `export-manifest.json`) or project JSON |
+| `mxpage_xiaohongshu_plan` | Xiaohongshu step 1 — has a fully local Chinese fallback plan |
+| `mxpage_xiaohongshu_generate` | Step 3 — one image per page, VPA-gated |
+| `mxpage_xiaohongshu_edit` | Step 4 — edit one page in place |
+| `mxpage_channels` | Channel diagnostics |
 
-Forced order: **create → analyze → plan → generate**. Detail frames are anchored on the original main photo plus the first successful hero.
+---
 
-## Skills (shipped in the package)
+## Skills
 
 | Skill | When |
-|-------|------|
+|---|---|
 | `mxpage-ecommerce-page` | Taobao / Tmall / JD / Shopee hero + detail pages |
-| `mxpage-xiaohongshu` | Xiaohongshu four-step: plan → confirm VPA prompt → generate → edit |
+| `mxpage-xiaohongshu` | The four-step carousel flow |
 | `mxpage-batch-sku` | One project per SKU; never mix reference images |
 
-## Config (host, not the browser)
+---
 
-Schemastery `Config` on the plugin. Defaults that matter:
+## Differences from upstream, and fixes made during the port
 
-| Field | Default |
-|-------|---------|
-| `imageBaseUrl` | `https://api.openai.com/v1` |
-| `imageApiKeyEnv` | `MXPAGE_IMAGE_API_KEY` (env **name**, not the key) |
-| `imageModel` | `gpt-image-2` |
-| `defaultLanguage` | `zh-CN` |
-| `defaultHeroCount` | `3` |
-| `defaultDetailCount` | `6` |
-| `allowSvgFallback` | `false` (SVG fallback is **not** implemented) |
-| `generateAsJob` | `true` |
+**Fixed** (each documented at its call site):
 
-Analyze / plan / VPA use `ctx.llm` when the web profile provides vision, or optional `textBaseUrl` + `textApiKeyEnv` + `textModel`. Image gen always uses the Images API — never the chat adapter.
+1. **Visual Prompt Agent retry bug.** Upstream `requestRaw` read
+   `if (urls.length === 1 || options?.suppressUsageLog)`, conflating "skip usage
+   logging" with "skip the base-URL retry". The VPA is the only caller passing
+   `suppressUsageLog: true`, so it silently lost the `/v1`-vs-root fallback and
+   degraded to the template prompt on gateways needing a versioned base URL.
+2. **Path traversal.** Upstream's `/api/files/[...path]` route joined
+   `rootDir()` with an unvalidated relative path. The storage port rejects
+   escapes (`normalizeRelPath`) and the route is gone entirely.
+3. **Cross-platform paths.** Upstream stored `path.join` output (backslashes on
+   Windows) while its URL builder converted back with `split(path.sep)`.
+4. **Production cancellation.** Upstream's abort registry was guarded by
+   `process.env.NODE_ENV !== "production"`, so production builds could not cancel.
+5. **Dead values dropped:** `ProjectStatus.COMPLETED` and
+   `GenerationStatus.QUEUED` were never written by any upstream service.
 
-Workspace default: `$DSH_HOME/mxpage/projects/<projectId>/`. Override with `workspaceDir`.
+**Preserved deliberately** (flagged, not silently changed):
 
-## Non-goals
+- **Quota does not rotate models.** Upstream `shouldFallbackToNextImageModel`
+  returns false for `429 / quota / 403 / 401`, so an exhausted channel aborts
+  instead of trying the next candidate. Exposed as the
+  `rotateChannelOnQuotaExhausted` config flag.
+- **`editSectionImage` is not cancellable** — upstream never registered an abort
+  controller on that path.
+- `archiver` was replaced by a dependency-free ZIP writer, which also removes
+  upstream's `process.cwd()` temp file.
 
-- **No** Next.js App Router / Electron / Prisma port. This is a Cordis ESM bundle, not a standalone app.
-- **No** `generate_image` tool (avoids colliding with community gallery plugins).
-- **No** API key in the browser, chat, git, or tool args.
-- **No** `dsh.client` Studio panel in this release (official attachment preview is enough).
-- **No** SVG fallback. Failed gens return a mapped error (`401` / quota / timeout / abort).
-- **No** DSH source patches. Profile stays `web`.
+---
 
 ## Develop
 
 ```sh
-npm test
-npm run build   # writes prebuilt index.js (committed; GitHub installs do not need prepare)
+npm install
+npm run build     # tsdown → lib/index.js (+ lib/client.js when src/client exists)
+npm test          # node --experimental-strip-types --test
+npx tsc --noEmit  # 0 errors expected
 ```
 
-`peerDependencies` are `"*"`. The host `web` profile provides `@deepseek-ai/cordis`, `dsh-tools`, `dsh-jobs`, `dsh-llm`, `schemastery`. `devDependencies` `file:` paths point at this workspace's `dsh-runtime` so `npm test` type-strips against the same copies; a GitHub-only clone does not need them for `dsh plugin add` as long as `index.js` is present.
+Tests worth knowing about:
 
-Do not add `@deepseek-ai/dsh` to an application `package.json`.
+- `test/bundle.test.ts` — package manifest sanity **and** the host-agnostic
+  invariant on `src/core/**`
+- `test/core.test.ts` — ZIP header/CRC format, repository semantics
+  (terminal-state stickiness, system-project hiding, stale recovery), storage
+  path containment, task cancellation
+- `test/smoke.test.ts` — loads the **built** `lib/index.js`, runs the real
+  `apply()` against a mock Cordis context, and asserts all 15 tools register
+
+---
 
 ## License
 
-MIT. MxPage prompts, schemas, and pipeline logic are MIT (灵矩绘境); see [NOTICE](./NOTICE) and [LICENSE](./LICENSE).
+MIT. MxPage prompts, schemas and pipeline logic are MIT (灵矩绘境) — see
+[NOTICE](./NOTICE) and [LICENSE](./LICENSE).
 
-Topics: `dsh-plugin` · `dsh` · `deepseek-harness`
+Topics: `dsh-plugin` · `dsh` · `deepseek-harness` · `mxpage` · `ecommerce`

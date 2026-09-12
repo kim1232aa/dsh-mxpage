@@ -1,29 +1,66 @@
 {
   "name": "dsh-mxpage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "description": "MxPage for DeepSeek Harness: ecommerce product-image workbench (analyze → plan → Visual Prompt Agent → generate) on top of an extracted, host-agnostic core of ziguishian/MxPage.",
   "type": "module",
-  "main": "index.js",
-  "files": ["index.js", "cordis.patch.yml", "skills"],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "skills"
+  ],
   "scripts": {
     "build": "tsdown",
+    "build:watch": "tsdown --watch",
     "test": "node --experimental-strip-types --test test/**/*.test.ts"
   },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-store",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-scope": "^0.0.1-rc.1",
+    "schemastery": "^3.18.0",
+    "zod": "^4.1.11"
+  },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-jobs": "*",
-    "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/cordis": ">=4.0.0-rc <5",
+    "@deepseek-ai/dsh-attachment": ">=0.0.1-rc <2",
+    "@deepseek-ai/dsh-llm": ">=0.0.1-rc <2",
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc <2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "file:../../dsh-runtime/node_modules/@deepseek-ai/cordis",
-    "@deepseek-ai/dsh-jobs": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-jobs",
-    "@deepseek-ai/dsh-llm": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-llm",
-    "@deepseek-ai/dsh-tools": "file:../../dsh-runtime/node_modules/@deepseek-ai/dsh-tools",
-    "@deepseek-ai/schemastery": "file:../../dsh-runtime/node_modules/@deepseek-ai/schemastery",
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-attachment": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@types/node": "^22.20.0",
     "tsdown": "^0.12.0",
     "typescript": "^5.8.0"
-  }
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "mxpage",
+    "ecommerce",
+    "image-generation"
+  ]
 }

@@ -1,18 +1,59 @@
 # dsh-mxpage implementer constraints
 
-Read docs/guides/dsh-plugin-spec-investigation.md and docs/guides/mxpage-tool-contracts.md before writing code.
+Read `docs/guides/dsh-plugin-spec-investigation.md`, `docs/guides/mxpage-tool-contracts.md`
+and `docs/guides/mxpage-core-architecture.md` before writing code.
 
-Hard rules:
+## Architecture (v0.2 — "换芯留壳")
+
+The plugin is a thin host adapter over `src/core/` (see `src/core/README.md`).
+
+- `src/core/**` — host-agnostic port of ziguishian/MxPage. Must NEVER import
+  `@deepseek-ai/*`, `schemastery`, Next.js, Prisma, React, or touch
+  `process.cwd()` / `process.env`. It talks to the host only through the five
+  ports in `src/core/ports/`.
+- `src/**` (outside `core/`) — the DSH adapter: config, tools, host port
+  implementations, attachment bridging.
+- `src/client/**` — the browser panel.
+
+## Hard rules
 
 - Export `name` + `apply`. Never `export default function apply`.
-- `inject` is `['tools', 'attachments', 'jobs']` (string array).
-- `Config` is a Schemastery schema (interface + const).
-- `package.json` has `dsh.bundle.patch`. Prebuilt `index.js`.
-- Tools are `mxpage_*` only. Never `generate_image` / `image_generate`.
+- `inject` is a **string array of host service names actually provided by the
+  runtime**, e.g. `['tools', 'attachments', 'webServer', 'systemPrompt', 'commands']`.
+  Verify a name exists before adding it — `@deepseek-ai/dsh-jobs` is **not** a
+  real package. Background work is owned by the plugin (see
+  `src/core/ports/tasks.ts`), exactly as `@dickpy/dsh-imagegen` does with its
+  in-process `GenerationTaskQueue`.
+- `Config` is a Schemastery schema (interface + const), imported from
+  **`schemastery`** — not `@deepseek-ai/schemastery`.
+- Tools come from `defineTool` in `@deepseek-ai/dsh-tools` and are registered
+  with `ctx.tools.register(...)`.
+- Attachments come from `@deepseek-ai/dsh-attachment`
+  (`AttachmentStore`, `ImageAttachmentRef`).
+- `package.json` has `dsh.bundle.patch` and outputs to `lib/` (`lib/index.js`,
+  `lib/client.js`).
+- Tools are `mxpage_*` only. Never `generate_image` / `image_generate` —
+  channels are shared with `dsh-imagegen` through the ProviderResolver port,
+  not by registering a competing tool.
 - Optional params omit `required`. Object output schemas set `additionalProperties`.
-- `render` is pure text-only. Images: `saveImage({ data, mediaType, name })`, return `attachmentId`.
-- Jobs: `start({ kind: 'mxpage_page', label, owner, run: () => JobHooks })`. Merge `JobKindMap`. `run()` is sync. Do not start if `exec.signal.aborted`.
-- Secrets from `MXPAGE_IMAGE_API_KEY` only. Redact `sk-` / Bearer.
-- Path-normalize writes; reject `..`.
-- Do not port Next.js / Electron / Prisma. No `dsh.client` in P0–P3.
-- Keep NOTICE / MIT attribution for MxPage.
+- `render` is pure text-only. Images: `saveImage({ data, mediaType, name })`,
+  return `attachmentId`.
+- Path-normalize writes; reject `..` (`src/util/paths.ts`).
+- Keep NOTICE / MIT attribution for MxPage (灵矩绘境).
+
+## Revoked rules (do not reinstate)
+
+These two rules produced the v0.1 architecture that discarded MxPage's product
+surface. They are explicitly **reversed**:
+
+1. ~~`Secrets from MXPAGE_IMAGE_API_KEY only.`~~
+   → Credentials come from the DSH host through `ProviderResolver`
+   (`src/host/provider-resolver.ts`). Environment variables are a fallback for
+   CLI use, never the primary path. Redaction (`sk-` / `Bearer`) still applies.
+
+2. ~~`Do not port Next.js / Electron / Prisma. No dsh.client in P0–P3.`~~
+   → Still true: do **not** port Next.js, Electron, or the Prisma ORM.
+   But the client React components **are** in scope for `src/client/**`; the
+   upstream UI is written as `"use client"` components whose only framework
+   coupling is `next/link` and `next/navigation`. And `dsh.client` is a
+   first-class deliverable, not a deferred one.

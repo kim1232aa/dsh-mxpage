@@ -1,6 +1,17 @@
+# MxPage plugin layer.
+#
+# `channels` is intentionally empty: it must be filled in through
+# 设置 → 插件 → MxPage with a real endpoint + key. Leaving it empty makes every
+# mxpage_* tool return MXPAGE_HTTP_401 with an actionable message instead of
+# silently using a wrong default.
 - insert:
     - id: mxpage
       name: dsh-mxpage
       config:
-        imageModel: gpt-image-2
+        channels: []
         defaultLanguage: zh-CN
+        defaultHeroCount: 3
+        defaultDetailCount: 6
+        defaultDetailAspectRatio: 3:4
+        allowSvgFallback: false
+        rotateChannelOnQuotaExhausted: true
