@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Config } from '../config.ts'
 import { editSection } from '../pipeline/edit.ts'
 import type { EditMode, PromptLanguage } from '../prompts/generation.ts'
-import { createImagesClient, type ImageSize, type ImagesClient } from '../provider/openai-images.ts'
+import { imagesClientFromEnv, type ImageSize, type ImagesClient } from '../provider/openai-images.ts'
 import type { ProjectStore } from '../service/project-store.ts'
 import { redactSecrets } from '../util/redact.ts'
 
@@ -78,7 +78,5 @@ export function editSectionTool(opts: {
 
 function resolveImages(config: Config, injected?: ImagesClient): ImagesClient | undefined {
   if (injected) return injected
-  const apiKey = process.env[config.imageApiKeyEnv]
-  if (!apiKey) return undefined
-  return createImagesClient({ baseUrl: config.imageBaseUrl, apiKey })
+  return imagesClientFromEnv(config)
 }

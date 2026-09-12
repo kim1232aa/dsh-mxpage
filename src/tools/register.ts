@@ -4,6 +4,7 @@ import type { Config } from '../config.ts'
 import type { ImagesClient } from '../provider/openai-images.ts'
 import { resolveCompleteJson, type CompleteJson, type SaveImageFn } from '../provider/vision-text.ts'
 import { createStore } from '../service/project-store.ts'
+import type { AttachmentReader } from '../util/attachments.ts'
 import { addAssetTool } from './add-asset.ts'
 import { analyzeProductTool } from './analyze.ts'
 import { createProjectTool } from './create-project.ts'
@@ -31,6 +32,8 @@ export interface MxpageToolsHost {
       height?: number
       name?: string
     }>
+    readImage?: AttachmentReader['readImage']
+    imageHostPath?: AttachmentReader['imageHostPath']
   }
   llm?: unknown
   jobs: MxpageJobsApi
@@ -77,8 +80,12 @@ export function registerMxpageTools(
   })
   const toolSaveImage = (input: { data: Uint8Array; mediaType: string; name?: string }) =>
     ctx.attachments.saveImage(input)
-  ctx.tools.register(createProjectTool({ store, storeRoot, config }))
-  ctx.tools.register(addAssetTool({ store, storeRoot }))
+  const attachments: AttachmentReader = {
+    readImage: ctx.attachments.readImage?.bind(ctx.attachments),
+    imageHostPath: ctx.attachments.imageHostPath?.bind(ctx.attachments),
+  }
+  ctx.tools.register(createProjectTool({ store, storeRoot, config, attachments }))
+  ctx.tools.register(addAssetTool({ store, storeRoot, attachments }))
   ctx.tools.register(projectStatusTool({ store }))
   ctx.tools.register(analyzeProductTool({ store, completeJson }))
   ctx.tools.register(planPageTool({ store, config, completeJson }))

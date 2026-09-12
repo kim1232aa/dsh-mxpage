@@ -5,7 +5,7 @@ import type { Config } from '../config.ts'
 import { analyzeProduct, readAnalysisFile } from '../pipeline/analyze.ts'
 import { generateSection } from '../pipeline/generate.ts'
 import { planPage, readPlanFile, type NormalizedSection } from '../pipeline/plan.ts'
-import { createImagesClient, type ImagesClient } from '../provider/openai-images.ts'
+import { imagesClientFromEnv, type ImagesClient } from '../provider/openai-images.ts'
 import type { CompleteJson } from '../provider/vision-text.ts'
 import type { ProjectStore } from '../service/project-store.ts'
 import { redactSecrets } from '../util/redact.ts'
@@ -51,9 +51,7 @@ function tryStatus(store: ProjectStore, projectId: string, status: string): void
 
 function resolveImages(config: Config, injected?: ImagesClient): ImagesClient | undefined {
   if (injected) return injected
-  const apiKey = process.env[config.imageApiKeyEnv]
-  if (!apiKey) return undefined
-  return createImagesClient({ baseUrl: config.imageBaseUrl, apiKey })
+  return imagesClientFromEnv(config)
 }
 
 async function withSectionLock(

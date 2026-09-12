@@ -195,7 +195,7 @@ export async function generateSection(
 
   const ref = await deps.saveImage({
     data: generated.bytes,
-    mediaType: 'image/png',
+    mediaType: generated.mediaType,
     name: `${args.sectionKey}.png`,
   })
 

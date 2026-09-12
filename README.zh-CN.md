@@ -24,6 +24,15 @@ export MXPAGE_IMAGE_API_KEY=sk-...   # 示例 — 在本机填自己的 key，�
 
 **禁止**把密钥写进对话、git、`cordis.patch.yml`、工具参数、浏览器存储或会话事件。插件只读 `process.env[config.imageApiKeyEnv]`（默认环境变量**名**：`MXPAGE_IMAGE_API_KEY`）。日志和工具输出会脱敏 `sk-` / `Bearer`。
 
+如果上游只有 `/chat/completions`（没有 `/images/*`），客户端会退回聊天接口并抽出图片（含 markdown `data:image/...;base64`）。JPEG/WebP 会按魔数声明正确的 `mediaType`，避免 `saveImage` 因类型不符被拒。
+
+可选额度备份（仅在主端点返回额度/429 后使用）：
+
+```sh
+export MXPAGE_IMAGE_FALLBACK_BASE_URL=http://127.0.0.1:8787/v1
+export MXPAGE_IMAGE_FALLBACK_API_KEY=sk-...
+```
+
 ## 安装
 
 必须指定 **`web`** profile：
@@ -75,8 +84,8 @@ cp -R skills/mxpage-ecommerce-page \
 
 | 工具 | 作用 |
 |------|------|
-| `mxpage_create_project` | 创建项目，把 1–10 张商品图**复制**（不移动）进 `assets/` |
-| `mxpage_add_asset` | 追加图片；替换主图必须显式 `role=main` |
+| `mxpage_create_project` | 用工作区 `image_paths` 和/或对话 `attachment_ids` 创建项目（合计 1–10 张，**复制**不移动） |
+| `mxpage_add_asset` | 用 `image_path` 或 `attachment_id` 追加图片；替换主图必须显式 `role=main` |
 | `mxpage_project_status` | 只读状态机 / section / job |
 | `mxpage_analyze_product` | 视觉分析 → `analysis.json` |
 | `mxpage_plan_page` | 头图/详情规划 + 风格指南（未分析则拒绝） |

@@ -9,7 +9,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
-import { createImagesClient, mapImageError } from '../src/provider/openai-images.ts'
+import { createImagesClient, imagesClientFromEnv, mapImageError, sniffImageMediaType, withQuotaFallback } from '../src/provider/openai-images.ts'
 import { MAX_IMAGE_BYTES, MAX_IMAGE_EDGE, readImageFile } from '../src/util/images.ts'
 
 const PNG_B64 =
@@ -311,6 +311,14 @@ test('mapImageError maps 401, 429, and 400-model', () => {
     ok: false,
     error: '额度或速率限制',
   })
+  assert.deepEqual(mapImageError(503, '预扣费额度失败 remaining 0.12 need 0.17'), {
+    ok: false,
+    error: '额度或速率限制',
+  })
+  assert.deepEqual(mapImageError(503, '用户额度不足, 剩余额度: ¥-0.000034'), {
+    ok: false,
+    error: '额度或速率限制',
+  })
   assert.deepEqual(mapImageError(400, 'unknown model xyz'), {
     ok: false,
     error: '模型不支持',
@@ -371,4 +379,192 @@ test('readImageFile accepts 1x1 PNG and rejects oversize bytes/edges', (t) => {
   const tooTall = join(dir, 'tall.jpg')
   writeFileSync(tooTall, jpegSof(1, MAX_IMAGE_EDGE + 1))
   assert.throws(() => readImageFile(tooTall), /8192/)
+})
+
+test('when /images/generations is unsupported, falls back to chat image output', async (t) => {
+  const urls: string[] = []
+  const { baseUrl } = await listen(t, async (req, res) => {
+    urls.push(req.url ?? '')
+    await readBody(req)
+    if ((req.url ?? '').includes('/images/generations')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        error: { message: "Provider 'openai-compatible-chat' does not support image generation" },
+      }))
+      return
+    }
+    if ((req.url ?? '').includes('/chat/completions')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        choices: [{
+          message: { role: 'assistant', content: `Here you go:\n![image](data:image/png;base64,${PNG_B64})` },
+        }],
+      }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+
+  const result = await client(baseUrl).generate({
+    prompt: 'a product photo',
+    size: '1024x1024',
+    model: 'novai/gemini-2.5-flash-image',
+    references: [],
+    signal: new AbortController().signal,
+  })
+  assert.ok(urls.some((u) => (u ?? '').endsWith('/images/generations')), String(urls))
+  assert.ok(urls.some((u) => (u ?? '').endsWith('/chat/completions')), String(urls))
+  assert.equal(result.mediaType, 'image/png')
+  assert.ok(Buffer.from(result.bytes).equals(PNG))
+})
+
+test('withQuotaFallback retries generate after 额度或速率限制', async () => {
+  let primaryCalls = 0
+  const primary = {
+    async generate() {
+      primaryCalls += 1
+      throw new Error('额度或速率限制')
+    },
+    async edit() {
+      throw new Error('额度或速率限制')
+    },
+  }
+  const fallback = {
+    async generate() {
+      return { bytes: new Uint8Array(PNG), mediaType: 'image/png' as const }
+    },
+    async edit() {
+      return { bytes: new Uint8Array(PNG), mediaType: 'image/png' as const }
+    },
+  }
+  const images = withQuotaFallback(primary, fallback)
+  const result = await images.generate({
+    prompt: 'x',
+    size: '1024x1024',
+    model: 'gpt-image-2',
+    references: [],
+    signal: new AbortController().signal,
+  })
+  assert.equal(primaryCalls, 1)
+  assert.ok(Buffer.from(result.bytes).equals(PNG))
+})
+
+test('withQuotaFallback does not swallow non-quota errors', async () => {
+  const primary = {
+    async generate() {
+      throw new Error('图像 API 密钥无效或未配置')
+    },
+    async edit() {
+      throw new Error('图像 API 密钥无效或未配置')
+    },
+  }
+  const fallback = {
+    async generate() {
+      return { bytes: new Uint8Array(PNG), mediaType: 'image/png' as const }
+    },
+    async edit() {
+      return { bytes: new Uint8Array(PNG), mediaType: 'image/png' as const }
+    },
+  }
+  await assert.rejects(
+    () => withQuotaFallback(primary, fallback).generate({
+      prompt: 'x',
+      size: '1024x1024',
+      model: 'gpt-image-2',
+      references: [],
+      signal: new AbortController().signal,
+    }),
+    /图像 API 密钥无效或未配置/,
+  )
+})
+
+test('imagesClientFromEnv falls back to local mock after quota on primary', async (t) => {
+  const prevUrl = process.env.MXPAGE_IMAGE_FALLBACK_BASE_URL
+  const prevKey = process.env.MXPAGE_IMAGE_FALLBACK_API_KEY
+  t.after(() => {
+    if (prevUrl === undefined) delete process.env.MXPAGE_IMAGE_FALLBACK_BASE_URL
+    else process.env.MXPAGE_IMAGE_FALLBACK_BASE_URL = prevUrl
+    if (prevKey === undefined) delete process.env.MXPAGE_IMAGE_FALLBACK_API_KEY
+    else process.env.MXPAGE_IMAGE_FALLBACK_API_KEY = prevKey
+  })
+
+  const { baseUrl: primaryUrl } = await listen(t, async (req, res) => {
+    await readBody(req)
+    res.writeHead(429)
+    res.end('insufficient_user_quota')
+  })
+  const { baseUrl: fallbackUrl } = await listen(t, async (req, res) => {
+    await readBody(req)
+    sendPng(res)
+  })
+
+  process.env.MXPAGE_TEST_IMAGE_KEY = 'testdata'
+  process.env.MXPAGE_IMAGE_FALLBACK_BASE_URL = fallbackUrl
+  process.env.MXPAGE_IMAGE_FALLBACK_API_KEY = 'fallback-key'
+  t.after(() => {
+    delete process.env.MXPAGE_TEST_IMAGE_KEY
+  })
+
+  const images = imagesClientFromEnv({
+    imageBaseUrl: primaryUrl,
+    imageApiKeyEnv: 'MXPAGE_TEST_IMAGE_KEY',
+  })
+  assert.ok(images)
+  const result = await images!.generate({
+    prompt: 'x',
+    size: '1024x1024',
+    model: 'gpt-image-2',
+    references: [],
+    signal: new AbortController().signal,
+  })
+  assert.ok(Buffer.from(result.bytes).equals(PNG))
+})
+
+test('sniffImageMediaType distinguishes jpeg magic from png', () => {
+  assert.equal(sniffImageMediaType(new Uint8Array(PNG)), 'image/png')
+  assert.equal(sniffImageMediaType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])), 'image/jpeg')
+})
+
+test('quota 503 用户额度不足 skips chat fallback and maps to 额度', async (t) => {
+  const urls: string[] = []
+  const { baseUrl } = await listen(t, async (req, res) => {
+    urls.push(req.url ?? '')
+    await readBody(req)
+    res.writeHead(503, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: '用户额度不足, 剩余额度: ¥-0.000034' } }))
+  })
+  await assert.rejects(
+    () => client(baseUrl).generate({
+      prompt: 'x',
+      size: '1024x1024',
+      model: 'novai/gemini-3.1-flash-lite-image',
+      references: [],
+      signal: new AbortController().signal,
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error)
+      assert.equal(err.message, '额度或速率限制')
+      return true
+    },
+  )
+  assert.ok(urls.some((u) => (u ?? '').includes('/images/generations')), String(urls))
+  assert.equal(urls.filter((u) => (u ?? '').includes('/chat/completions')).length, 0)
+})
+
+test('jpeg bytes are labeled image/jpeg so saveImage will accept them', async (t) => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9])
+  const { baseUrl } = await listen(t, async (req, res) => {
+    await readBody(req)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ b64_json: jpeg.toString('base64') }] }))
+  })
+  const result = await client(baseUrl).generate({
+    prompt: 'x',
+    size: '1024x1024',
+    model: 'gpt-image-2',
+    references: [],
+    signal: new AbortController().signal,
+  })
+  assert.equal(result.mediaType, 'image/jpeg')
 })

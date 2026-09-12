@@ -1,7 +1,7 @@
 # 原始需求
 
 日期：2026-09-12  
-状态：规范已调查；环境已落地；插件待按规格实现
+状态：规范已调查；环境已落地；插件 P0–P5 已实现；官方 web 对话验收已通过（1 头图 + 3 详情）
 
 ## 用户原话（需求真源）
 
@@ -54,7 +54,7 @@
 |------|------|------|
 | 0. 规范调查 + 开发文档 | 官方插件规范、MxPage 流水线、工具契约、Skill 草稿 | **本文档集** |
 | 1. 环境 | 官方完整 `web` + 预览代理 + 完整性门禁 | **已落地** |
-| 2. 插件实现 | `dsh-mxpage` P0–P5 | **待执行计划** |
+| 2. 插件实现 | `dsh-mxpage` P0–P5 | **已落地；官方对话验收 1 头图 + 3 详情** |
 
 ## 文档去哪读
 
@@ -66,4 +66,3 @@
 | 插件规格 | [superpowers/specs/2026-09-12-dsh-mxpage-plugin-design.md](./superpowers/specs/2026-09-12-dsh-mxpage-plugin-design.md) |
 | 实现计划 | [superpowers/plans/2026-09-12-dsh-mxpage-plugin.md](./superpowers/plans/2026-09-12-dsh-mxpage-plugin.md) |
 | 开发指南（调查细节） | [guides/dsh-mxpage-plugin-dev.md](./guides/dsh-mxpage-plugin-dev.md) |
-| 环境规格 | [superpowers/specs/2026-09-12-dsh-complete-web-preview-design.md](./superpowers/specs/2026-09-12-dsh-complete-web-preview-design.md) |

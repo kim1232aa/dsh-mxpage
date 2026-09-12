@@ -84,7 +84,7 @@ async function llmHasVision(llm, signal) {
 		return;
 	}
 }
-function dataUrl(image) {
+function dataUrl$1(image) {
 	return `data:${image.mediaType || "image/png"};base64,${Buffer.from(image.bytes).toString("base64")}`;
 }
 function asImageMediaType(value) {
@@ -201,7 +201,7 @@ function createHttpCompleteJson(opts) {
 			text: input.user
 		}, ...(input.images ?? []).map((image) => ({
 			type: "image_url",
-			image_url: { url: dataUrl(image) }
+			image_url: { url: dataUrl$1(image) }
 		}))] : input.user;
 		const url = `${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`;
 		let res;
@@ -469,6 +469,32 @@ function createStore(rootDir) {
 	};
 }
 //#endregion
+//#region src/util/attachments.ts
+function sniffExt(bytes) {
+	if (bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80) return ".png";
+	if (bytes.length >= 2 && bytes[0] === 255 && bytes[1] === 216) return ".jpg";
+	return ".png";
+}
+function assertAttachmentId(id) {
+	const value = id.trim();
+	if (!value || value.includes("..") || value.includes("/") || value.includes("\\")) throw new Error(redactSecrets("invalid attachment_id"));
+	return value;
+}
+async function materializeAttachment(storeRoot, attachmentId, attachments, signal) {
+	const id = assertAttachmentId(attachmentId);
+	if (!attachments) throw new Error("无法读取附件");
+	let bytes;
+	const hostPath = attachments.imageHostPath?.({ attachmentId: id });
+	if (hostPath && existsSync(hostPath)) bytes = new Uint8Array(readFileSync(hostPath));
+	else if (attachments.readImage) bytes = (await attachments.readImage({ attachmentId: id }, signal)).data;
+	if (!bytes || bytes.byteLength === 0) throw new Error("无法读取附件");
+	const incoming = assertInside(storeRoot, join(storeRoot, "incoming"));
+	mkdirSync(incoming, { recursive: true });
+	const dest = assertInside(storeRoot, join(incoming, `att_${randomUUID()}${sniffExt(bytes)}`));
+	writeFileSync(dest, Buffer.from(bytes));
+	return dest;
+}
+//#endregion
 //#region src/tools/add-asset.ts
 const ROLES = [
 	"main",
@@ -479,7 +505,7 @@ const ROLES = [
 function addAssetTool(opts) {
 	return defineTool({
 		name: "mxpage_add_asset",
-		description: "Add a product or reference image to an existing mxpage project. Pass image_path. Replacing the main image requires role=main. P1 does not read attachment_id.",
+		description: "Add a product or reference image to an existing mxpage project. Pass image_path or attachment_id. Replacing the main image requires role=main.",
 		parameters: {
 			project_id: {
 				type: "string",
@@ -492,7 +518,7 @@ function addAssetTool(opts) {
 			},
 			attachment_id: {
 				type: "string",
-				description: "Unused in P1; pass image_path instead"
+				description: "Chat image attachment id; copied into the project store"
 			},
 			role: {
 				type: "string",
@@ -511,18 +537,21 @@ function addAssetTool(opts) {
 				text: JSON.stringify(value, null, 2)
 			}]
 		},
-		execute: async (args) => {
-			if (!args.image_path) {
-				if (args.attachment_id) return {
-					ok: false,
-					error: "请提供 image_path（P1 暂不从附件读取）"
-				};
+		execute: async (args, exec) => {
+			let abs;
+			try {
+				if (args.image_path) abs = assertInside(opts.storeRoot, args.image_path);
+				else if (args.attachment_id) abs = await materializeAttachment(opts.storeRoot, args.attachment_id, opts.attachments, exec.signal);
+			} catch (err) {
 				return {
 					ok: false,
-					error: redactSecrets("请提供 image_path")
+					error: redactSecrets(err instanceof Error ? err.message : String(err))
 				};
 			}
-			const abs = assertInside(opts.storeRoot, args.image_path);
+			if (!abs) return {
+				ok: false,
+				error: redactSecrets("请提供 image_path 或 attachment_id")
+			};
 			const record = opts.store.addAsset(args.project_id, abs, args.role);
 			return {
 				ok: true,
@@ -899,7 +928,7 @@ const ASPECT_RATIOS = [
 function createProjectTool(opts) {
 	return defineTool({
 		name: "mxpage_create_project",
-		description: "Create an mxpage project and copy product photos into assets/ (does not move sources). Call this before generate_section. image_paths are workspace-relative or absolute, 1–10 files.",
+		description: "Create an mxpage project and copy product photos into assets/ (does not move sources). Call this before generate_section. Pass image_paths (workspace files inside the mxpage store) and/or attachment_ids from the current chat image. Combined 1–10 images. Default main is the first.",
 		parameters: {
 			name: {
 				type: "string",
@@ -908,12 +937,16 @@ function createProjectTool(opts) {
 			image_paths: {
 				type: "array",
 				items: { type: "string" },
-				required: true,
-				description: "Product image paths (1–10). Copied into the project; sources are left in place."
+				description: "Product image paths (workspace-relative or absolute, inside the mxpage store). Combined with attachment_ids, 1–10 files."
+			},
+			attachment_ids: {
+				type: "array",
+				items: { type: "string" },
+				description: "Chat image attachment ids from the current turn. Copied into the project store; 1–10 combined with image_paths."
 			},
 			main_image_path: {
 				type: "string",
-				description: "Main product image; default first image_paths entry"
+				description: "Main product image path; default first resolved image"
 			},
 			language: {
 				type: "string",
@@ -936,8 +969,22 @@ function createProjectTool(opts) {
 				text: JSON.stringify(value, null, 2)
 			}]
 		},
-		execute: async (args) => {
-			const imagePaths = args.image_paths.map((path) => assertInside(opts.storeRoot, path));
+		execute: async (args, exec) => {
+			const pathArgs = Array.isArray(args.image_paths) ? args.image_paths : [];
+			const attachmentArgs = Array.isArray(args.attachment_ids) ? args.attachment_ids : [];
+			const imagePaths = pathArgs.map((path) => assertInside(opts.storeRoot, path));
+			try {
+				for (const id of attachmentArgs) imagePaths.push(await materializeAttachment(opts.storeRoot, id, opts.attachments, exec.signal));
+			} catch (err) {
+				return {
+					ok: false,
+					error: redactSecrets(err instanceof Error ? err.message : String(err))
+				};
+			}
+			if (imagePaths.length < 1 || imagePaths.length > 10) return {
+				ok: false,
+				error: "请提供 image_paths 或 attachment_ids（1–10 张）"
+			};
 			const mainImagePath = args.main_image_path === void 0 ? void 0 : assertInside(opts.storeRoot, args.main_image_path);
 			const record = opts.store.create({
 				name: args.name,
@@ -1623,7 +1670,7 @@ async function generateSection(deps, args, signal) {
 	writeFileSync(versionPath, buf);
 	const ref = await deps.saveImage({
 		data: generated.bytes,
-		mediaType: "image/png",
+		mediaType: generated.mediaType,
 		name: `${args.sectionKey}.png`
 	});
 	return {
@@ -1793,7 +1840,7 @@ async function editSection(deps, args, signal) {
 	writeFileSync(versionPath, buf);
 	const ref = await deps.saveImage({
 		data: generated.bytes,
-		mediaType: "image/png",
+		mediaType: generated.mediaType,
 		name: `${args.sectionKey}.png`
 	});
 	tryStatus$1(deps.store, record.id, "generated");
@@ -1809,16 +1856,19 @@ async function editSection(deps, args, signal) {
 }
 //#endregion
 //#region src/provider/openai-images.ts
+function isQuotaBody(body) {
+	return /insufficient_user_quota|预扣费额度失败|out of credits|额度失败|用户额度不足|额度不足|余额不足|remaining quota/i.test(body);
+}
 function mapImageError(status, body) {
 	if (status === 401) return {
 		ok: false,
 		error: "图像 API 密钥无效或未配置"
 	};
-	if (status === 429) return {
+	if (status === 429 || isQuotaBody(body)) return {
 		ok: false,
 		error: "额度或速率限制"
 	};
-	if (status === 400 && /model/i.test(body)) return {
+	if (status === 400 && /model/i.test(body) && !/does not support image generation/i.test(body)) return {
 		ok: false,
 		error: "模型不支持"
 	};
@@ -1827,6 +1877,10 @@ function mapImageError(status, body) {
 		ok: false,
 		error: redactSecrets(`图像 API 请求失败 (${status})${snippet ? `: ${snippet}` : ""}`)
 	};
+}
+function isQuotaError(err) {
+	const message = err instanceof Error ? err.message : String(err ?? "");
+	return /额度或速率限制/.test(message);
 }
 function throwRedacted(message) {
 	throw new Error(redactSecrets(message));
@@ -1852,13 +1906,58 @@ function toBlob(image) {
 function appendImage(form, image) {
 	form.append("image", toBlob(image), image.filename);
 }
-function parsePngResult(payload) {
-	const b64 = payload?.data?.[0]?.b64_json;
-	if (!b64) throwRedacted("图像 API 返回空数据");
+function asImage(bytes) {
 	return {
-		bytes: new Uint8Array(Buffer.from(b64, "base64")),
-		mediaType: "image/png"
+		bytes,
+		mediaType: sniffImageMediaType(bytes)
 	};
+}
+function sniffImageMediaType(bytes) {
+	if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+	if (bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) return "image/webp";
+	return "image/png";
+}
+function flattenContent(content) {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.map((part) => {
+		if (typeof part === "string") return part;
+		if (!part || typeof part !== "object") return "";
+		const rec = part;
+		if (typeof rec.text === "string") return rec.text;
+		if (typeof rec.image_url === "string") return rec.image_url;
+		if (rec.image_url && typeof rec.image_url === "object" && typeof rec.image_url.url === "string") return String(rec.image_url.url);
+		return "";
+	}).join("\n");
+}
+function extractImageB64(payload) {
+	if (!payload || typeof payload !== "object") return void 0;
+	const rec = payload;
+	const data = rec.data;
+	if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+		const first = data[0];
+		if (typeof first.b64_json === "string" && first.b64_json.trim()) return first.b64_json.trim();
+	}
+	const choices = rec.choices;
+	const match = flattenContent(Array.isArray(choices) && choices[0] && typeof choices[0] === "object" ? choices[0].message?.content : void 0).match(/data:image\/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\n\r]+)/i);
+	if (match?.[1]) return match[1].replace(/\s+/g, "");
+}
+function extractImageUrl(payload) {
+	if (!payload || typeof payload !== "object") return void 0;
+	const data = payload.data;
+	if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+		const url = data[0].url;
+		if (typeof url === "string" && /^https?:\/\//i.test(url)) return url;
+	}
+}
+function shouldFallbackToChat(status, body) {
+	if (status === 401 || status === 429) return false;
+	if (isQuotaBody(body)) return false;
+	if (status === 400 && /model/i.test(body) && !/does not support image generation/i.test(body)) return false;
+	return status >= 400;
+}
+function dataUrl(image) {
+	return `data:${image.mediaType || "image/png"};base64,${Buffer.from(image.bytes).toString("base64")}`;
 }
 function editForm(prompt, model, size, images) {
 	const form = new FormData();
@@ -1870,7 +1969,92 @@ function editForm(prompt, model, size, images) {
 }
 function createImagesClient(opts) {
 	const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
-	async function request(path, init, signal) {
+	async function parsePayload(payload, signal) {
+		const b64 = extractImageB64(payload);
+		if (b64) return asImage(new Uint8Array(Buffer.from(b64, "base64")));
+		const url = extractImageUrl(payload);
+		if (!url) throwRedacted("图像 API 返回空数据");
+		if (signal.aborted) throwCancelled();
+		let res;
+		try {
+			res = await fetchFn(url, { signal });
+		} catch (err) {
+			if (isAbort(err, signal)) throwCancelled();
+			throwRedacted(err instanceof Error ? err.message : String(err));
+		}
+		if (!res.ok) throwRedacted(`图像下载失败 (${res.status})`);
+		const buf = new Uint8Array(await res.arrayBuffer());
+		if (buf.byteLength < 32) throwRedacted("图像 API 返回空数据");
+		return asImage(buf);
+	}
+	async function parseRaw(raw, signal) {
+		const fromText = raw.match(/data:image\/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\n\r]+)/i);
+		const tryJson = (text) => {
+			try {
+				return JSON.parse(text);
+			} catch {
+				const first = text.indexOf("{");
+				const last = text.lastIndexOf("}");
+				if (first < 0 || last <= first) return void 0;
+				try {
+					return JSON.parse(text.slice(first, last + 1));
+				} catch {
+					return;
+				}
+			}
+		};
+		const payload = tryJson(raw);
+		if (payload !== void 0) try {
+			return await parsePayload(payload, signal);
+		} catch (err) {
+			if (isAbort(err, signal)) throwCancelled();
+		}
+		if (fromText?.[1]) return asImage(new Uint8Array(Buffer.from(fromText[1].replace(/\s+/g, ""), "base64")));
+		throwRedacted("图像 API 返回空数据");
+	}
+	async function postJson(path, body, signal) {
+		return fetchFn(endpoint(opts.baseUrl, path), {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${opts.apiKey}`,
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify(body),
+			signal
+		});
+	}
+	async function requestChat(prompt, model, size, images, signal) {
+		if (signal.aborted) throwCancelled();
+		const parts = [{
+			type: "text",
+			text: [
+				prompt,
+				`Output a single product image only. Approximate size ${size}. No watermark.`,
+				images.length > 0 ? "Keep the product identity from the attached reference photos. The first image is the main product." : ""
+			].filter(Boolean).join("\n")
+		}];
+		for (const image of images.slice(0, 4)) parts.push({
+			type: "image_url",
+			image_url: { url: dataUrl(image) }
+		});
+		let res;
+		try {
+			res = await postJson("/chat/completions", {
+				model,
+				messages: [{
+					role: "user",
+					content: parts
+				}]
+			}, signal);
+		} catch (err) {
+			if (isAbort(err, signal)) throwCancelled();
+			throwRedacted(err instanceof Error ? err.message : String(err));
+		}
+		const raw = await res.text().catch(() => "");
+		if (!res.ok) throwMapped(res.status, raw);
+		return parseRaw(raw, signal);
+	}
+	async function request(path, init, signal, fallback) {
 		if (signal.aborted) throwCancelled();
 		let res;
 		try {
@@ -1887,22 +2071,22 @@ function createImagesClient(opts) {
 			if (isAbort(err, signal)) throwCancelled();
 			throwRedacted(err instanceof Error ? err.message : String(err));
 		}
+		const raw = await res.text().catch(() => "");
 		if (!res.ok) {
-			const body = await res.text().catch(() => "");
-			throwMapped(res.status, body);
+			if (shouldFallbackToChat(res.status, raw)) return fallback();
+			throwMapped(res.status, raw);
 		}
-		let payload;
 		try {
-			payload = await res.json();
+			return await parseRaw(raw, signal);
 		} catch (err) {
 			if (isAbort(err, signal)) throwCancelled();
-			throwRedacted(err instanceof Error ? err.message : "图像 API 响应无效");
+			return fallback();
 		}
-		return parsePngResult(payload);
 	}
 	return {
 		generate(input) {
-			if (input.references.length > 0) return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, input.references) }, input.signal);
+			const fallback = () => requestChat(input.prompt, input.model, input.size, input.references, input.signal);
+			if (input.references.length > 0) return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, input.references) }, input.signal, fallback);
 			return request("/images/generations", {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
@@ -1910,12 +2094,47 @@ function createImagesClient(opts) {
 					prompt: input.prompt,
 					size: input.size
 				})
-			}, input.signal);
+			}, input.signal, fallback);
 		},
 		edit(input) {
-			return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, [input.image, ...input.references]) }, input.signal);
+			return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, [input.image, ...input.references]) }, input.signal, () => requestChat(input.prompt, input.model, input.size, [input.image, ...input.references], input.signal));
 		}
 	};
+}
+function withQuotaFallback(primary, fallback) {
+	async function retry(run, backup) {
+		try {
+			return await run();
+		} catch (err) {
+			if (isQuotaError(err)) return backup();
+			throw err;
+		}
+	}
+	return {
+		generate(input) {
+			return retry(() => primary.generate(input), () => fallback.generate(input));
+		},
+		edit(input) {
+			return retry(() => primary.edit(input), () => fallback.edit(input));
+		}
+	};
+}
+function imagesClientFromEnv(config) {
+	const apiKey = process.env[config.imageApiKeyEnv];
+	if (!apiKey) return void 0;
+	const primary = createImagesClient({
+		baseUrl: config.imageBaseUrl,
+		apiKey
+	});
+	const fallbackUrl = process.env.MXPAGE_IMAGE_FALLBACK_BASE_URL?.trim();
+	const fallbackKey = process.env.MXPAGE_IMAGE_FALLBACK_API_KEY?.trim();
+	if (!fallbackUrl || !fallbackKey) return primary;
+	const norm = (url) => url.replace(/\/+$/, "");
+	if (norm(fallbackUrl) === norm(config.imageBaseUrl)) return primary;
+	return withQuotaFallback(primary, createImagesClient({
+		baseUrl: fallbackUrl,
+		apiKey: fallbackKey
+	}));
 }
 //#endregion
 //#region src/tools/edit-section.ts
@@ -2020,12 +2239,7 @@ function editSectionTool(opts) {
 }
 function resolveImages$2(config, injected) {
 	if (injected) return injected;
-	const apiKey = process.env[config.imageApiKeyEnv];
-	if (!apiKey) return void 0;
-	return createImagesClient({
-		baseUrl: config.imageBaseUrl,
-		apiKey
-	});
+	return imagesClientFromEnv(config);
 }
 //#endregion
 //#region src/pipeline/export.ts
@@ -2374,12 +2588,7 @@ function tryStatus(store, projectId, status) {
 }
 function resolveImages$1(config, injected) {
 	if (injected) return injected;
-	const apiKey = process.env[config.imageApiKeyEnv];
-	if (!apiKey) return void 0;
-	return createImagesClient({
-		baseUrl: config.imageBaseUrl,
-		apiKey
-	});
+	return imagesClientFromEnv(config);
 }
 async function withSectionLock(locks, key, fn) {
 	const prev = locks.get(key) ?? Promise.resolve();
@@ -2673,12 +2882,7 @@ function generateSectionTool(opts) {
 }
 function resolveImages(config, injected) {
 	if (injected) return injected;
-	const apiKey = process.env[config.imageApiKeyEnv];
-	if (!apiKey) return void 0;
-	return createImagesClient({
-		baseUrl: config.imageBaseUrl,
-		apiKey
-	});
+	return imagesClientFromEnv(config);
 }
 //#endregion
 //#region src/tools/plan.ts
@@ -2858,14 +3062,20 @@ function registerMxpageTools(ctx, config, deps) {
 		saveImage
 	});
 	const toolSaveImage = (input) => ctx.attachments.saveImage(input);
+	const attachments = {
+		readImage: ctx.attachments.readImage?.bind(ctx.attachments),
+		imageHostPath: ctx.attachments.imageHostPath?.bind(ctx.attachments)
+	};
 	ctx.tools.register(createProjectTool({
 		store,
 		storeRoot,
-		config
+		config,
+		attachments
 	}));
 	ctx.tools.register(addAssetTool({
 		store,
-		storeRoot
+		storeRoot,
+		attachments
 	}));
 	ctx.tools.register(projectStatusTool({ store }));
 	ctx.tools.register(analyzeProductTool({

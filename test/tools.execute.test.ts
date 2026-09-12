@@ -46,12 +46,13 @@ function fakeExec(signal?: AbortSignal) {
 
 function setup(
   t: TestContext,
-  opts: { images?: ImagesClient } = {},
+  opts: { images?: ImagesClient; attachmentHost?: Record<string, string> } = {},
 ) {
   const tmp = mkdtempSync(join(tmpdir(), 'mxpage-tools-'))
   t.after(() => rmSync(tmp, { recursive: true, force: true }))
   const saved: SavedImage[] = []
   const tools: ToolDef[] = []
+  const host = opts.attachmentHost ?? {}
   const ctx = {
     tools: { register(tool: ToolDef) { tools.push(tool) } },
     attachments: {
@@ -65,6 +66,7 @@ function setup(
           height: 1,
         }
       },
+      imageHostPath: (ref: { attachmentId: string }) => host[ref.attachmentId],
     },
     jobs: {
       start() { throw new Error('jobs unused in P1') },
@@ -132,6 +134,39 @@ test('create_project copies fixture PNG into assets/ and does not delete source'
   assert.ok(readFileSync(dest).equals(PNG))
   assert.equal(result.assetCount, 1)
   assert.match(result.projectId, /^mxp_/)
+})
+
+test('create_project copies chat attachment_ids via imageHostPath', async (t) => {
+  const hostFile = join(tmpdir(), `mxpage-att-${Date.now()}.png`)
+  writeFileSync(hostFile, PNG)
+  t.after(() => rmSync(hostFile, { force: true }))
+  const { tmp, byName } = setup(t, { attachmentHost: { 'sha256:ab': hostFile } })
+  const result = await byName('mxpage_create_project').execute(
+    { attachment_ids: ['sha256:ab'], name: 'from-chat' },
+    fakeExec(),
+  ) as { ok: boolean; projectId: string; assetCount: number; mainAssetPath: string; workspaceDir: string }
+  assert.equal(result.ok, true)
+  assert.equal(result.assetCount, 1)
+  assert.ok(existsSync(result.mainAssetPath))
+  assert.ok(readFileSync(result.mainAssetPath).equals(PNG))
+  assert.ok(result.workspaceDir.startsWith(tmp))
+})
+
+test('add_asset copies attachment_id via imageHostPath', async (t) => {
+  const hostFile = join(tmpdir(), `mxpage-att-add-${Date.now()}.png`)
+  writeFileSync(hostFile, PNG)
+  t.after(() => rmSync(hostFile, { force: true }))
+  const { fixture, byName } = setup(t, { attachmentHost: { att_angle: hostFile } })
+  const created = await byName('mxpage_create_project').execute(
+    { image_paths: [fixture] },
+    fakeExec(),
+  ) as { ok: true; projectId: string }
+  const added = await byName('mxpage_add_asset').execute(
+    { project_id: created.projectId, role: 'angle', attachment_id: 'att_angle' },
+    fakeExec(),
+  ) as { ok: boolean; assetCount: number }
+  assert.equal(added.ok, true)
+  assert.equal(added.assetCount, 2)
 })
 
 test('generate_section with mock client writes png and calls saveImage', async (t) => {
@@ -318,7 +353,7 @@ test('generate_section without API key returns ok:false and does not throw a sta
   })
 })
 
-test('add_asset requires image_path; attachment_id-only is refused in P1', async (t) => {
+test('add_asset requires image_path or attachment_id', async (t) => {
   const { fixture, byName } = setup(t)
   const created = await byName('mxpage_create_project').execute(
     { image_paths: [fixture] },
@@ -330,16 +365,14 @@ test('add_asset requires image_path; attachment_id-only is refused in P1', async
     fakeExec(),
   ) as { ok: false; error: string }
   assert.equal(neither.ok, false)
-  assert.match(neither.error, /image_path/)
+  assert.match(neither.error, /image_path|attachment_id/)
 
-  const attachmentOnly = await byName('mxpage_add_asset').execute(
+  const missingHost = await byName('mxpage_add_asset').execute(
     { project_id: created.projectId, role: 'angle', attachment_id: 'att_x' },
     fakeExec(),
-  )
-  assert.deepEqual(attachmentOnly, {
-    ok: false,
-    error: '请提供 image_path（P1 暂不从附件读取）',
-  })
+  ) as { ok: false; error: string }
+  assert.equal(missingHost.ok, false)
+  assert.match(missingHost.error, /无法读取附件/)
 
   const extra = join(fixture, '..', 'angle.png')
   writeFileSync(extra, PNG)

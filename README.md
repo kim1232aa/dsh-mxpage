@@ -24,6 +24,15 @@ export MXPAGE_IMAGE_API_KEY=sk-...   # example — use your real key locally, ne
 
 **Never** put the key in chat, git, `cordis.patch.yml`, tool arguments, browser storage, or session events. The plugin reads `process.env[config.imageApiKeyEnv]` (default env **name**: `MXPAGE_IMAGE_API_KEY`). Logs and tool output redact `sk-` / `Bearer` tokens.
 
+If the host only exposes `/chat/completions` (no `/images/*`), the client falls back to chat and extracts the image (including markdown `data:image/...;base64`). JPEG/WebP bytes are sniffed so `saveImage` declares the matching media type.
+
+Optional quota backup (used only after the primary returns 额度/429):
+
+```sh
+export MXPAGE_IMAGE_FALLBACK_BASE_URL=http://127.0.0.1:8787/v1
+export MXPAGE_IMAGE_FALLBACK_API_KEY=sk-...
+```
+
 ## Install
 
 Must target the **`web`** profile:
@@ -75,8 +84,8 @@ No `generate_image` / `image_generate` / `image-generate`.
 
 | Tool | Role |
 |------|------|
-| `mxpage_create_project` | Create a project and copy (not move) 1–10 product photos into `assets/` |
-| `mxpage_add_asset` | Append a photo; replacing the main image requires explicit `role=main` |
+| `mxpage_create_project` | Create a project from workspace `image_paths` and/or chat `attachment_ids` (1–10 combined; copy, do not move) |
+| `mxpage_add_asset` | Append a photo via `image_path` or `attachment_id`; replacing the main image requires explicit `role=main` |
 | `mxpage_project_status` | Read-only state machine / sections / job |
 | `mxpage_analyze_product` | Vision analysis → `analysis.json` |
 | `mxpage_plan_page` | Hero/detail plan + style guide (refuses if not analyzed) |

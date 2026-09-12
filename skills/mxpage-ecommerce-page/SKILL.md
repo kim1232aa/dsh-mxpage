@@ -15,7 +15,7 @@ description: 电商头图、详情页生产。用户提到电商头图、详情�
 
 不要跳步。顺序必须是 create → analyze → plan → 生图：
 
-1. `mxpage_create_project`（或已有 `project_id` 则 `mxpage_add_asset`）。主图必须明确；默认第一张。最多 10 张，复制不移动。
+1. `mxpage_create_project`（或已有 `project_id` 则 `mxpage_add_asset`）。对话里的商品图用 `attachment_ids`；工作区文件用 `image_paths`。主图必须明确；默认第一张。最多 10 张，复制不移动。
 2. `mxpage_analyze_product`。需要视觉。失败（无视觉 / 401 / 429 / 额度）则停止，告诉用户改 Config 或环境变量 `MXPAGE_IMAGE_API_KEY` / 文本视觉端点。禁止用文件名猜商品。
 3. `mxpage_plan_page`。未分析禁止规划。
 4. 整页：先提醒 `mxpage_generate_page` 会消耗图像配额，再调用它（后台 job）。若该工具尚未注册或不存在，则对每个 section 走 `mxpage_refine_prompt` → `mxpage_generate_section`。用户只要单张时也走这条 per-section 路径。

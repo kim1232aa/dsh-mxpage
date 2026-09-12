@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Config } from '../config.ts'
 import { generateSection } from '../pipeline/generate.ts'
-import { createImagesClient, type ImageSize, type ImagesClient } from '../provider/openai-images.ts'
+import { imagesClientFromEnv, type ImageSize, type ImagesClient } from '../provider/openai-images.ts'
 import type { CompleteJson } from '../provider/vision-text.ts'
 import type { ProjectStore } from '../service/project-store.ts'
 
@@ -67,7 +67,5 @@ export function generateSectionTool(opts: {
 
 function resolveImages(config: Config, injected?: ImagesClient): ImagesClient | undefined {
   if (injected) return injected
-  const apiKey = process.env[config.imageApiKeyEnv]
-  if (!apiKey) return undefined
-  return createImagesClient({ baseUrl: config.imageBaseUrl, apiKey })
+  return imagesClientFromEnv(config)
 }
