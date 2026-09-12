@@ -241,7 +241,11 @@ Images API：
 
 - `POST {baseUrl}/images/generations`
 - `POST {baseUrl}/images/edits`
-- 有参考图走 multipart，字段 `image` 或 `image[]`（失败会换字段名重试）
+- 无参考图：`POST /images/generations` JSON
+- 1 张参考图：multipart 字段 `image`（OpenAI 兼容；grok-imagine 实测 200）
+- 2+ 张参考图：优先 JSON `{ images: [{ type: "image_url", url: dataURI }] }`（xAI 官方，grok-imagine 实测 200）；失败再试 multipart 重复字段 `images`（复数，实测 200）、`image[]`（OpenAI 文档）；再失败才降到 1 张
+- 实测踩坑：multipart 重复 `image` 或 `image[]` 在 grok-imagine 上是上游 400，**不是**模型只能吃 1 张
+- `grok-imagine-edit` 在当前中转 503（`No eligible Grok media accounts`），不要当主模型
 - 响应 `b64_json` 或 `url`
 - 图像超时调用方默认 120s（本插件 Config 180s）
 - 不要把 Gemini Google 协议做一期主路径

@@ -155,7 +155,7 @@ test('generate without references posts JSON /images/generations', async (t) => 
   })
 })
 
-test('edit always posts multipart /images/edits with image field', async (t) => {
+test('edit with one image posts multipart /images/edits with image field', async (t) => {
   let url = ''
   let fieldNames: string[] = []
 
@@ -171,7 +171,7 @@ test('edit always posts multipart /images/edits with image field', async (t) => 
     size: '1024x1024',
     model: 'gpt-image-2',
     image: { bytes: new Uint8Array(PNG), filename: 'current.png', mediaType: 'image/png' },
-    references: [PNG_REF],
+    references: [],
     signal: new AbortController().signal,
   })
 
@@ -415,6 +415,83 @@ test('when /images/generations is unsupported, falls back to chat image output',
   })
   assert.ok(urls.some((u) => (u ?? '').endsWith('/images/generations')), String(urls))
   assert.ok(urls.some((u) => (u ?? '').endsWith('/chat/completions')), String(urls))
+  assert.equal(result.mediaType, 'image/png')
+  assert.ok(Buffer.from(result.bytes).equals(PNG))
+})
+
+test('generate with two references posts JSON images array first', async (t) => {
+  let url = ''
+  let contentType = ''
+  let body: unknown
+
+  const { baseUrl } = await listen(t, async (req, res) => {
+    url = req.url ?? ''
+    contentType = String(req.headers['content-type'] ?? '')
+    body = JSON.parse((await readBody(req)).toString('utf8'))
+    sendPng(res)
+  })
+
+  const extra = { ...PNG_REF, filename: 'hero.png' }
+  const result = await client(baseUrl).generate({
+    prompt: 'a product detail',
+    size: '1024x1024',
+    model: 'grok-imagine-image',
+    references: [PNG_REF, extra],
+    signal: new AbortController().signal,
+  })
+
+  assert.ok(url.endsWith('/images/edits'), url)
+  assert.match(contentType, /application\/json/)
+  assert.equal((body as { model?: string }).model, 'grok-imagine-image')
+  const images = (body as { images?: unknown[] }).images
+  assert.equal(images?.length, 2)
+  assert.equal((images?.[0] as { type?: string }).type, 'image_url')
+  assert.match(String((images?.[0] as { url?: string }).url), /^data:image\/png;base64,/)
+  assert.equal(result.mediaType, 'image/png')
+  assert.ok(Buffer.from(result.bytes).equals(PNG))
+})
+
+test('when JSON multi-ref edits fail, retries multipart images then first image only', async (t) => {
+  const attempts: string[] = []
+  const { baseUrl } = await listen(t, async (req, res) => {
+    const raw = await readBody(req)
+    const contentType = String(req.headers['content-type'] ?? '')
+    if (/application\/json/i.test(contentType)) {
+      const parsed = JSON.parse(raw.toString('utf8')) as { images?: unknown[] }
+      attempts.push(`json:${parsed.images?.length ?? 0}`)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'xAI upstream returned status 400', type: 'invalid_request_error' } }))
+      return
+    }
+    const fields = parseMultipartFieldNames(raw, contentType)
+    const imageCount = fields.filter((name) => name === 'image').length
+    const imagesCount = fields.filter((name) => name === 'images').length
+    const bracketCount = fields.filter((name) => name === 'image[]').length
+    if (imagesCount > 0) {
+      attempts.push(`mp-images:${imagesCount}`)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'xAI upstream returned status 400', type: 'invalid_request_error' } }))
+      return
+    }
+    if (bracketCount > 0) {
+      attempts.push(`mp-image[]:${bracketCount}`)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'xAI upstream returned status 400', type: 'invalid_request_error' } }))
+      return
+    }
+    attempts.push(`mp-image:${imageCount}`)
+    sendPng(res)
+  })
+
+  const extra = { ...PNG_REF, filename: 'hero.png' }
+  const result = await client(baseUrl).generate({
+    prompt: 'a product detail',
+    size: '1024x1024',
+    model: 'grok-imagine-image',
+    references: [PNG_REF, extra],
+    signal: new AbortController().signal,
+  })
+  assert.deepEqual(attempts, ['json:2', 'mp-images:2', 'mp-image[]:2', 'mp-image:1'])
   assert.equal(result.mediaType, 'image/png')
   assert.ok(Buffer.from(result.bytes).equals(PNG))
 })

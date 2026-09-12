@@ -4,6 +4,7 @@ import { generateSection } from '../pipeline/generate.ts'
 import { imagesClientFromEnv, type ImageSize, type ImagesClient } from '../provider/openai-images.ts'
 import type { CompleteJson } from '../provider/vision-text.ts'
 import type { ProjectStore } from '../service/project-store.ts'
+import { renderJsonAndImages } from './render.ts'
 
 const SIZES = ['1024x1024', '1024x1536'] as const
 
@@ -35,7 +36,7 @@ export function generateSectionTool(opts: {
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+      render: renderJsonAndImages,
     },
     timeoutMs: 180_000,
     isConcurrencySafe: () => false,

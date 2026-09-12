@@ -18,7 +18,7 @@ type ToolDef = {
   timeoutMs?: number
   isConcurrencySafe?(args: unknown): boolean
   execute(args: unknown, exec: { signal: AbortSignal }): Promise<unknown>
-  output: { render(args: unknown, value: unknown): Array<{ type: string; text?: string }> }
+  output: { render(args: unknown, value: unknown): Array<{ type: string; text?: string; attachment?: { attachmentId?: string } }> }
 }
 
 function testConfig(workspaceDir: string): Config {
@@ -223,7 +223,7 @@ test('generate_section with mock client writes png and calls saveImage', async (
   assert.ok(call.references.length >= 1, 'default references include the main asset')
 })
 
-test('generate_section render output is text-only with no image / base64', async (t) => {
+test('generate_section render includes image attachment without base64', async (t) => {
   const { byName } = setup(t, {
     images: {
       generate: async () => ({ bytes: new Uint8Array(PNG), mediaType: 'image/png' }),
@@ -237,14 +237,18 @@ test('generate_section render output is text-only with no image / base64', async
     sectionKey: 'hero_01',
     outputPath: '/tmp/hero_01.png',
     attachmentId: 'att_1',
+    mediaType: 'image/png',
+    bytes: 70,
+    width: 1,
+    height: 1,
     modelUsed: 'gpt-image-2',
     versionId: 'v1',
   }
   const blocks = generate.output.render({}, value)
-  assert.equal(blocks.length, 1)
   assert.equal(blocks[0]?.type, 'text')
   assert.equal(blocks[0]?.text, JSON.stringify(value, null, 2))
-  assert.ok(!blocks.some((block) => block.type === 'image'))
+  assert.equal(blocks[1]?.type, 'image')
+  assert.equal(blocks[1]?.attachment?.attachmentId, 'att_1')
   assert.doesNotMatch(JSON.stringify(blocks), /base64/i)
   assert.doesNotMatch(blocks[0]?.text ?? '', /iVBORw0KGgo/)
 })

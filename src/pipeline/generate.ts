@@ -3,7 +3,7 @@ import { basename, join } from 'node:path'
 import type { Config } from '../config.ts'
 import type { ImageBlob, ImageSize, ImagesClient } from '../provider/openai-images.ts'
 import type { CompleteJson } from '../provider/vision-text.ts'
-import type { ProjectRecord, ProjectStore } from '../service/project-store.ts'
+import type { ProjectRecord, ProjectStore, GeneratedOutput } from '../service/project-store.ts'
 import { readImageFile } from '../util/images.ts'
 import { assertInside } from '../util/paths.ts'
 import { redactSecrets } from '../util/redact.ts'
@@ -48,8 +48,29 @@ export interface GenerateSectionDeps {
     data: Uint8Array
     mediaType: 'image/png' | string
     name?: string
-  }) => Promise<{ attachmentId: string }>
+  }) => Promise<{
+    attachmentId: string
+    mediaType?: string
+    bytes?: number
+    width?: number
+    height?: number
+    name?: string
+  }>
   completeJson?: CompleteJson
+}
+
+export function rememberOutput(
+  store: ProjectStore,
+  projectId: string,
+  item: GeneratedOutput,
+): void {
+  try {
+    const rec = store.read(projectId)
+    const rest = (rec.outputs ?? []).filter((entry) => entry.key !== item.key)
+    store.write(projectId, { outputs: [...rest, item].sort((a, b) => a.key.localeCompare(b.key)) })
+  } catch {
+    // keep the generated file even if metadata write fails
+  }
 }
 
 function fail(error: string): GenerateSectionFail {
@@ -198,6 +219,15 @@ export async function generateSection(
     mediaType: generated.mediaType,
     name: `${args.sectionKey}.png`,
   })
+  rememberOutput(deps.store, record.id, {
+    key: args.sectionKey,
+    attachmentId: ref.attachmentId,
+    mediaType: ref.mediaType ?? generated.mediaType,
+    bytes: ref.bytes ?? generated.bytes.byteLength,
+    width: ref.width ?? 0,
+    height: ref.height ?? 0,
+    name: ref.name ?? `${args.sectionKey}.png`,
+  })
 
   return {
     ok: true,
@@ -205,6 +235,10 @@ export async function generateSection(
     sectionKey: args.sectionKey,
     outputPath,
     attachmentId: ref.attachmentId,
+    mediaType: ref.mediaType ?? generated.mediaType,
+    bytes: ref.bytes ?? generated.bytes.byteLength,
+    width: ref.width ?? 0,
+    height: ref.height ?? 0,
     modelUsed: model,
     versionId,
   }

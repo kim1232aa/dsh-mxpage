@@ -158,9 +158,9 @@ test('edit writes versions/<key>/v2.png and leaves v1.png', async (t) => {
   assert.ok(saved.some((item) => Buffer.from(item.data).equals(PNG_EDIT)))
 
   const blocks = byName('mxpage_edit_section').output.render({}, edited)
-  assert.equal(blocks.length, 1)
   assert.equal(blocks[0]?.type, 'text')
-  assert.ok(!blocks.some((block) => block.type === 'image'))
+  assert.ok(blocks.some((block) => block.type === 'image'))
+  assert.doesNotMatch(JSON.stringify(blocks), /base64/i)
 })
 
 test('edit without current output returns MXPAGE_NOT_FOUND', async (t) => {

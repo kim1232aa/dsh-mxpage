@@ -79,12 +79,28 @@ function toBlob(image: ImageBlob): Blob {
   return new Blob([copy], { type: image.mediaType || 'application/octet-stream' })
 }
 
-function appendImage(form: FormData, image: ImageBlob): void {
-  form.append('image', toBlob(image), image.filename)
+type ImageFormField = 'image' | 'images' | 'image[]'
+
+function appendImage(form: FormData, image: ImageBlob, field: ImageFormField = 'image'): void {
+  form.append(field, toBlob(image), image.filename)
 }
 
 function asImage(bytes: Uint8Array): { bytes: Uint8Array; mediaType: ImageMediaType } {
-  return { bytes, mediaType: sniffImageMediaType(bytes) }
+  if (bytes.byteLength < 3) throwRedacted('图像 API 返回空数据')
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { bytes, mediaType: 'image/jpeg' }
+  }
+  if (
+    bytes.length >= 12
+    && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) {
+    return { bytes, mediaType: 'image/webp' }
+  }
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return { bytes, mediaType: 'image/png' }
+  }
+  throwRedacted('图像 API 返回空数据')
 }
 
 export function sniffImageMediaType(bytes: Uint8Array): ImageMediaType {
@@ -159,13 +175,30 @@ function editForm(
   model: string,
   size: ImageSize,
   images: ImageBlob[],
+  field: ImageFormField = 'image',
 ): FormData {
   const form = new FormData()
   form.append('prompt', prompt)
   form.append('model', model)
   form.append('size', size)
-  for (const image of images) appendImage(form, image)
+  for (const image of images) appendImage(form, image, field)
   return form
+}
+
+function editJsonBody(
+  prompt: string,
+  model: string,
+  size: ImageSize,
+  images: ImageBlob[],
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { prompt, model, size }
+  if (images.length <= 1) {
+    const image = images[0]
+    if (image) body.image = { type: 'image_url', url: dataUrl(image) }
+    return body
+  }
+  body.images = images.map((image) => ({ type: 'image_url', url: dataUrl(image) }))
+  return body
 }
 
 export function createImagesClient(opts: {
@@ -310,16 +343,39 @@ export function createImagesClient(opts: {
 
   return {
     generate(input) {
-      const fallback = () => requestChat(input.prompt, input.model, input.size, input.references, input.signal)
-      if (input.references.length > 0) {
-        return request(
-          '/images/edits',
-          {
-            body: editForm(input.prompt, input.model, input.size, input.references),
-          },
-          input.signal,
-          fallback,
-        )
+      const chat = () => requestChat(input.prompt, input.model, input.size, input.references.slice(0, 1), input.signal)
+      const mp = (
+        images: ImageBlob[],
+        field: ImageFormField,
+        next: () => Promise<{ bytes: Uint8Array; mediaType: ImageMediaType }>,
+      ) => request(
+        '/images/edits',
+        { body: editForm(input.prompt, input.model, input.size, images, field) },
+        input.signal,
+        next,
+      )
+      const js = (
+        images: ImageBlob[],
+        next: () => Promise<{ bytes: Uint8Array; mediaType: ImageMediaType }>,
+      ) => request(
+        '/images/edits',
+        {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(editJsonBody(input.prompt, input.model, input.size, images)),
+        },
+        input.signal,
+        next,
+      )
+      // grok-imagine accepts 2+ refs as JSON `images` or multipart `images` (plural).
+      // Repeated multipart `image` / `image[]` is upstream 400 on xAI.
+      if (input.references.length > 1) {
+        return js(input.references, () =>
+          mp(input.references, 'images', () =>
+            mp(input.references, 'image[]', () =>
+              mp(input.references.slice(0, 1), 'image', chat))))
+      }
+      if (input.references.length === 1) {
+        return mp(input.references, 'image', chat)
       }
       return request(
         '/images/generations',
@@ -332,18 +388,41 @@ export function createImagesClient(opts: {
           }),
         },
         input.signal,
-        fallback,
+        chat,
       )
     },
     edit(input) {
-      return request(
+      const images = [input.image, ...input.references]
+      const chat = () => requestChat(input.prompt, input.model, input.size, images.slice(0, 1), input.signal)
+      const mp = (
+        imgs: ImageBlob[],
+        field: ImageFormField,
+        next: () => Promise<{ bytes: Uint8Array; mediaType: ImageMediaType }>,
+      ) => request(
+        '/images/edits',
+        { body: editForm(input.prompt, input.model, input.size, imgs, field) },
+        input.signal,
+        next,
+      )
+      const js = (
+        imgs: ImageBlob[],
+        next: () => Promise<{ bytes: Uint8Array; mediaType: ImageMediaType }>,
+      ) => request(
         '/images/edits',
         {
-          body: editForm(input.prompt, input.model, input.size, [input.image, ...input.references]),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(editJsonBody(input.prompt, input.model, input.size, imgs)),
         },
         input.signal,
-        () => requestChat(input.prompt, input.model, input.size, [input.image, ...input.references], input.signal),
+        next,
       )
+      if (images.length > 1) {
+        return js(images, () =>
+          mp(images, 'images', () =>
+            mp(images, 'image[]', () =>
+              mp([input.image], 'image', chat))))
+      }
+      return mp(images, 'image', chat)
     },
   }
 }

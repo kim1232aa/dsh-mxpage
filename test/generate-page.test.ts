@@ -31,7 +31,7 @@ type ToolDef = {
   timeoutMs?: number
   isConcurrencySafe?(args: unknown): boolean
   execute(args: unknown, exec: { signal: AbortSignal; agent?: unknown }): Promise<unknown>
-  output: { render(args: unknown, value: unknown): Array<{ type: string; text?: string }> }
+  output: { render(args: unknown, value: unknown): Array<{ type: string; text?: string; attachment?: { attachmentId?: string } }> }
 }
 
 function testConfig(workspaceDir: string): Config {
@@ -243,13 +243,14 @@ test('unanalyzed generate_page job analyzes, plans, and writes ≥1 hero + ≥3 
   ) as { ok: true; projectId: string; workspaceDir: string; mainAssetPath: string }
   assert.equal(created.ok, true)
 
-  const started = await page.execute(
+  const finished = await page.execute(
     { project_id: created.projectId },
     fakeExec(),
-  ) as { kind: string; jobId: string }
-  assert.equal(started.kind, 'background')
-  assert.ok(started.jobId)
-  const rec = jobs.records.get(started.jobId)
+  ) as { ok: boolean; jobId: string; state: string; outputs: unknown[] }
+  assert.equal(finished.ok, true)
+  assert.equal(finished.state, 'completed')
+  assert.ok(finished.jobId)
+  const rec = jobs.records.get(finished.jobId)
   assert.ok(rec, 'job was registered')
   assert.equal(rec.kind, 'mxpage_page')
   assert.equal(rec.label, `mxpage page ${created.projectId}`)
@@ -267,17 +268,18 @@ test('unanalyzed generate_page job analyzes, plans, and writes ≥1 hero + ≥3 
   assert.ok(existsSync(join(created.workspaceDir, 'plan.json')))
 
   const status = await byName('mxpage_job_status').execute(
-    { job_id: started.jobId },
+    { job_id: finished.jobId },
     fakeExec(),
   ) as { ok: boolean; state: string; progress: number }
   assert.equal(status.ok, true)
   assert.equal(status.state, 'completed')
   assert.equal(status.progress, 1)
 
-  const blocks = page.output.render({}, started)
-  assert.equal(blocks.length, 1)
+  const blocks = page.output.render({}, finished)
   assert.equal(blocks[0]?.type, 'text')
-  assert.ok(!blocks.some((block) => block.type === 'image'))
+  assert.ok(blocks.some((block) => block.type === 'image'), 'page result must render image attachments')
+  assert.doesNotMatch(JSON.stringify(blocks), /base64/i)
+  assert.ok(Array.isArray(finished.outputs) && finished.outputs.length >= 4)
 })
 
 test('detail generate references include main product image and first hero output', async (t) => {
@@ -297,10 +299,9 @@ test('detail generate references include main product image and first hero outpu
   const started = await byName('mxpage_generate_page').execute(
     { project_id: created.projectId },
     fakeExec(),
-  ) as { kind: 'background'; jobId: string }
-  const rec = jobs.records.get(started.jobId)!
-  const outcome = await rec.hooks.done
-  assert.equal(outcome.status, 'completed')
+  ) as { ok: true; jobId: string; state: string }
+  assert.equal(started.ok, true)
+  assert.equal(started.state, 'completed')
 
   const mainName = basename(created.mainAssetPath)
   const detailCalls = generateCalls.filter((call) => {
@@ -350,23 +351,29 @@ test('cancel stops the page job and keeps completed section files', async (t) =>
     { image_paths: [fixture] },
     fakeExec(),
   ) as { ok: true; projectId: string; workspaceDir: string }
-  const started = await byName('mxpage_generate_page').execute(
+  const page = byName('mxpage_generate_page')
+  const pending = page.execute(
     { project_id: created.projectId },
     fakeExec(),
-  ) as { kind: 'background'; jobId: string }
+  )
 
   await firstStarted
   const heroPath = join(created.workspaceDir, 'output', 'hero_01.png')
   await waitFor(() => existsSync(heroPath))
   assert.ok(existsSync(heroPath))
 
+  const jobId = [...jobs.records.keys()][0]
+  assert.ok(jobId)
   const cancelled = await byName('mxpage_job_cancel').execute(
-    { job_id: started.jobId, reason: 'test' },
+    { job_id: jobId, reason: 'test' },
     fakeExec(),
   ) as { ok: boolean }
   assert.equal(cancelled.ok, true)
 
-  const rec = jobs.records.get(started.jobId)!
+  const result = await pending as { ok: boolean; state: string }
+  assert.equal(result.ok, false)
+  assert.ok(result.state === 'killed' || result.state === 'failed', result.state)
+  const rec = jobs.records.get(jobId)!
   const outcome = await rec.hooks.done
   assert.ok(outcome.status === 'killed' || outcome.status === 'failed', outcome.status)
   assert.ok(existsSync(heroPath), 'completed hero remains')

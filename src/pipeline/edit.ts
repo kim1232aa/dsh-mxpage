@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { nextVersionId } from './generate.ts'
+import { nextVersionId, rememberOutput } from './generate.ts'
 import { readAnalysisFile } from './analyze.ts'
 import { readPlanFile } from './plan.ts'
 import type { Config } from '../config.ts'
@@ -49,7 +49,14 @@ export interface EditSectionDeps {
     data: Uint8Array
     mediaType: 'image/png' | string
     name?: string
-  }) => Promise<{ attachmentId: string }>
+  }) => Promise<{
+    attachmentId: string
+    mediaType?: string
+    bytes?: number
+    width?: number
+    height?: number
+    name?: string
+  }>
 }
 
 function fail(error: string): EditSectionFail {
@@ -151,6 +158,15 @@ export async function editSection(
     mediaType: generated.mediaType,
     name: `${args.sectionKey}.png`,
   })
+  rememberOutput(deps.store, record.id, {
+    key: args.sectionKey,
+    attachmentId: ref.attachmentId,
+    mediaType: ref.mediaType ?? generated.mediaType,
+    bytes: ref.bytes ?? generated.bytes.byteLength,
+    width: ref.width ?? 0,
+    height: ref.height ?? 0,
+    name: ref.name ?? `${args.sectionKey}.png`,
+  })
 
   tryStatus(deps.store, record.id, 'generated')
 
@@ -160,6 +176,10 @@ export async function editSection(
     sectionKey: args.sectionKey,
     outputPath,
     attachmentId: ref.attachmentId,
+    mediaType: ref.mediaType ?? generated.mediaType,
+    bytes: ref.bytes ?? generated.bytes.byteLength,
+    width: ref.width ?? 0,
+    height: ref.height ?? 0,
     modelUsed: model,
     versionId,
   }

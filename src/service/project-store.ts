@@ -8,6 +8,16 @@ export type AssetRole = 'main' | 'angle' | 'detail' | 'reference'
 export type ContentLanguage = 'zh-CN' | 'en' | 'ja' | 'ko'
 export type AspectRatio = '1:1' | '3:4' | '9:16'
 
+export interface GeneratedOutput {
+  key: string
+  attachmentId: string
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+  name?: string
+}
+
 export interface ProjectRecord {
   id: string
   name: string
@@ -17,6 +27,7 @@ export interface ProjectRecord {
   mainAssetPath: string
   assets: { path: string; role: AssetRole }[]
   workspaceDir: string
+  outputs?: GeneratedOutput[]
 }
 
 export interface CreateInput {

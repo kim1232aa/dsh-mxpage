@@ -15,6 +15,7 @@ import {
   type JobProgressState,
   type MxpageJobsApi,
 } from './job.ts'
+import { renderJsonAndImages } from './render.ts'
 import type { JobKind } from '@deepseek-ai/dsh-jobs'
 
 declare module '@deepseek-ai/dsh-jobs' {
@@ -26,7 +27,6 @@ declare module '@deepseek-ai/dsh-jobs' {
 const PAGE_KIND: JobKind = 'mxpage_page'
 
 const MISSING_KEY = '未配置图像 API Key（环境变量 MXPAGE_IMAGE_API_KEY）'
-const textRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
 
 function abortError(message = '已取消'): Error {
   const err = new Error(message)
@@ -250,7 +250,7 @@ export function generatePageTool(opts: {
   return defineTool({
     name: 'mxpage_generate_page',
     description:
-      'Generate a full ecommerce detail page (analyze → plan → all heroes → details). Uses a background job and consumes image API quota. Default section_keys are planned modules without output/<key>.png. Returns { kind: "background", jobId }.',
+      'Generate ecommerce page images (analyze → plan → heroes → details). Starts a cancellable background job, waits until it finishes, and returns output attachment refs. Use section_keys for a subset (e.g. ["hero_01"] for a single 主图). Consumes image API quota.',
     parameters: {
       project_id: { type: 'string', required: true, description: 'Existing mxpage project id' },
       section_keys: {
@@ -261,11 +261,11 @@ export function generatePageTool(opts: {
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
-      render: textRender,
+      render: renderJsonAndImages,
     },
     timeoutMs: 180_000,
     isConcurrencySafe: () => false,
-    execute: async (args, exec): Promise<Record<string, string | number | boolean>> => {
+    execute: async (args, exec) => {
       const images = resolveImages(opts.config, opts.images)
       if (images === undefined) return { ok: false, error: MISSING_KEY }
       if (!opts.jobs?.start) throw new Error('请加载 @deepseek-ai/dsh-jobs')
@@ -302,6 +302,8 @@ export function generatePageTool(opts: {
         ac.signal,
       ))
       work.catch(() => {})
+      const onAbort = () => ac.abort('tool-aborted')
+      exec.signal.addEventListener('abort', onAbort, { once: true })
       try {
         const jobId = opts.jobs.start({
           kind: PAGE_KIND,
@@ -321,13 +323,45 @@ export function generatePageTool(opts: {
             ),
           }),
         })
-        registerLiveJob(jobId, { projectDir: record.workspaceDir, abort: ac })
+        registerLiveJob(jobId, { projectId: record.id, projectDir: record.workspaceDir, abort: ac })
         resolveStart(jobId)
-        return { kind: 'background', jobId }
+        const outcome = await work.then(
+          () => ({ status: 'completed' as const, detail: undefined as string | undefined }),
+          (err) => {
+            const aborted = isAbortErr(err, ac.signal)
+            return {
+              status: (aborted ? 'killed' : 'failed') as 'killed' | 'failed',
+              detail: redactSecrets(String(err instanceof Error ? err.message : err)),
+            }
+          },
+        )
+        if (exec.signal.aborted) throw abortError(outcome.detail)
+        const latest = opts.store.read(projectId)
+        const outputs = latest.outputs ?? []
+        if (outcome.status !== 'completed') {
+          return {
+            ok: false,
+            jobId,
+            projectId,
+            state: outcome.status,
+            error: outcome.detail ?? outcome.status,
+            outputs,
+          }
+        }
+        return {
+          ok: true,
+          jobId,
+          projectId,
+          state: 'completed',
+          outputs,
+        }
       } catch (err) {
-        ac.abort()
+        if (!ac.signal.aborted) ac.abort()
+        if (err instanceof Error && err.name === 'AbortError') throw err
         rejectStart(err)
         throw err
+      } finally {
+        exec.signal.removeEventListener('abort', onAbort)
       }
     },
   })

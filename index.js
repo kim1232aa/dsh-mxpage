@@ -1559,6 +1559,12 @@ async function refinePrompt(deps, args, signal) {
 //#endregion
 //#region src/pipeline/generate.ts
 const MISSING_PROMPT = "missing prompt; call mxpage_refine_prompt or pass prompt_override";
+function rememberOutput(store, projectId, item) {
+	try {
+		const rest = (store.read(projectId).outputs ?? []).filter((entry) => entry.key !== item.key);
+		store.write(projectId, { outputs: [...rest, item].sort((a, b) => a.key.localeCompare(b.key)) });
+	} catch {}
+}
 function fail$2(error) {
 	return {
 		ok: false,
@@ -1673,12 +1679,25 @@ async function generateSection(deps, args, signal) {
 		mediaType: generated.mediaType,
 		name: `${args.sectionKey}.png`
 	});
+	rememberOutput(deps.store, record.id, {
+		key: args.sectionKey,
+		attachmentId: ref.attachmentId,
+		mediaType: ref.mediaType ?? generated.mediaType,
+		bytes: ref.bytes ?? generated.bytes.byteLength,
+		width: ref.width ?? 0,
+		height: ref.height ?? 0,
+		name: ref.name ?? `${args.sectionKey}.png`
+	});
 	return {
 		ok: true,
 		projectId: record.id,
 		sectionKey: args.sectionKey,
 		outputPath,
 		attachmentId: ref.attachmentId,
+		mediaType: ref.mediaType ?? generated.mediaType,
+		bytes: ref.bytes ?? generated.bytes.byteLength,
+		width: ref.width ?? 0,
+		height: ref.height ?? 0,
 		modelUsed: model,
 		versionId
 	};
@@ -1843,6 +1862,15 @@ async function editSection(deps, args, signal) {
 		mediaType: generated.mediaType,
 		name: `${args.sectionKey}.png`
 	});
+	rememberOutput(deps.store, record.id, {
+		key: args.sectionKey,
+		attachmentId: ref.attachmentId,
+		mediaType: ref.mediaType ?? generated.mediaType,
+		bytes: ref.bytes ?? generated.bytes.byteLength,
+		width: ref.width ?? 0,
+		height: ref.height ?? 0,
+		name: ref.name ?? `${args.sectionKey}.png`
+	});
 	tryStatus$1(deps.store, record.id, "generated");
 	return {
 		ok: true,
@@ -1850,6 +1878,10 @@ async function editSection(deps, args, signal) {
 		sectionKey: args.sectionKey,
 		outputPath,
 		attachmentId: ref.attachmentId,
+		mediaType: ref.mediaType ?? generated.mediaType,
+		bytes: ref.bytes ?? generated.bytes.byteLength,
+		width: ref.width ?? 0,
+		height: ref.height ?? 0,
 		modelUsed: model,
 		versionId
 	};
@@ -1903,19 +1935,24 @@ function toBlob(image) {
 	copy.set(image.bytes);
 	return new Blob([copy], { type: image.mediaType || "application/octet-stream" });
 }
-function appendImage(form, image) {
-	form.append("image", toBlob(image), image.filename);
+function appendImage(form, image, field = "image") {
+	form.append(field, toBlob(image), image.filename);
 }
-function asImage(bytes) {
-	return {
+function asImage$1(bytes) {
+	if (bytes.byteLength < 3) throwRedacted("图像 API 返回空数据");
+	if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return {
 		bytes,
-		mediaType: sniffImageMediaType(bytes)
+		mediaType: "image/jpeg"
 	};
-}
-function sniffImageMediaType(bytes) {
-	if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
-	if (bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) return "image/webp";
-	return "image/png";
+	if (bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) return {
+		bytes,
+		mediaType: "image/webp"
+	};
+	if (bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) return {
+		bytes,
+		mediaType: "image/png"
+	};
+	throwRedacted("图像 API 返回空数据");
 }
 function flattenContent(content) {
 	if (typeof content === "string") return content;
@@ -1959,19 +1996,39 @@ function shouldFallbackToChat(status, body) {
 function dataUrl(image) {
 	return `data:${image.mediaType || "image/png"};base64,${Buffer.from(image.bytes).toString("base64")}`;
 }
-function editForm(prompt, model, size, images) {
+function editForm(prompt, model, size, images, field = "image") {
 	const form = new FormData();
 	form.append("prompt", prompt);
 	form.append("model", model);
 	form.append("size", size);
-	for (const image of images) appendImage(form, image);
+	for (const image of images) appendImage(form, image, field);
 	return form;
+}
+function editJsonBody(prompt, model, size, images) {
+	const body = {
+		prompt,
+		model,
+		size
+	};
+	if (images.length <= 1) {
+		const image = images[0];
+		if (image) body.image = {
+			type: "image_url",
+			url: dataUrl(image)
+		};
+		return body;
+	}
+	body.images = images.map((image) => ({
+		type: "image_url",
+		url: dataUrl(image)
+	}));
+	return body;
 }
 function createImagesClient(opts) {
 	const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
 	async function parsePayload(payload, signal) {
 		const b64 = extractImageB64(payload);
-		if (b64) return asImage(new Uint8Array(Buffer.from(b64, "base64")));
+		if (b64) return asImage$1(new Uint8Array(Buffer.from(b64, "base64")));
 		const url = extractImageUrl(payload);
 		if (!url) throwRedacted("图像 API 返回空数据");
 		if (signal.aborted) throwCancelled();
@@ -1985,7 +2042,7 @@ function createImagesClient(opts) {
 		if (!res.ok) throwRedacted(`图像下载失败 (${res.status})`);
 		const buf = new Uint8Array(await res.arrayBuffer());
 		if (buf.byteLength < 32) throwRedacted("图像 API 返回空数据");
-		return asImage(buf);
+		return asImage$1(buf);
 	}
 	async function parseRaw(raw, signal) {
 		const fromText = raw.match(/data:image\/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\n\r]+)/i);
@@ -2009,7 +2066,7 @@ function createImagesClient(opts) {
 		} catch (err) {
 			if (isAbort(err, signal)) throwCancelled();
 		}
-		if (fromText?.[1]) return asImage(new Uint8Array(Buffer.from(fromText[1].replace(/\s+/g, ""), "base64")));
+		if (fromText?.[1]) return asImage$1(new Uint8Array(Buffer.from(fromText[1].replace(/\s+/g, ""), "base64")));
 		throwRedacted("图像 API 返回空数据");
 	}
 	async function postJson(path, body, signal) {
@@ -2085,8 +2142,14 @@ function createImagesClient(opts) {
 	}
 	return {
 		generate(input) {
-			const fallback = () => requestChat(input.prompt, input.model, input.size, input.references, input.signal);
-			if (input.references.length > 0) return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, input.references) }, input.signal, fallback);
+			const chat = () => requestChat(input.prompt, input.model, input.size, input.references.slice(0, 1), input.signal);
+			const mp = (images, field, next) => request("/images/edits", { body: editForm(input.prompt, input.model, input.size, images, field) }, input.signal, next);
+			const js = (images, next) => request("/images/edits", {
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(editJsonBody(input.prompt, input.model, input.size, images))
+			}, input.signal, next);
+			if (input.references.length > 1) return js(input.references, () => mp(input.references, "images", () => mp(input.references, "image[]", () => mp(input.references.slice(0, 1), "image", chat))));
+			if (input.references.length === 1) return mp(input.references, "image", chat);
 			return request("/images/generations", {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
@@ -2094,10 +2157,18 @@ function createImagesClient(opts) {
 					prompt: input.prompt,
 					size: input.size
 				})
-			}, input.signal, fallback);
+			}, input.signal, chat);
 		},
 		edit(input) {
-			return request("/images/edits", { body: editForm(input.prompt, input.model, input.size, [input.image, ...input.references]) }, input.signal, () => requestChat(input.prompt, input.model, input.size, [input.image, ...input.references], input.signal));
+			const images = [input.image, ...input.references];
+			const chat = () => requestChat(input.prompt, input.model, input.size, images.slice(0, 1), input.signal);
+			const mp = (imgs, field, next) => request("/images/edits", { body: editForm(input.prompt, input.model, input.size, imgs, field) }, input.signal, next);
+			const js = (imgs, next) => request("/images/edits", {
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(editJsonBody(input.prompt, input.model, input.size, imgs))
+			}, input.signal, next);
+			if (images.length > 1) return js(images, () => mp(images, "images", () => mp(images, "image[]", () => mp([input.image], "image", chat))));
+			return mp(images, "image", chat);
 		}
 	};
 }
@@ -2137,6 +2208,48 @@ function imagesClientFromEnv(config) {
 	}));
 }
 //#endregion
+//#region src/tools/render.ts
+function asImage(input) {
+	if (!input || typeof input !== "object") return void 0;
+	const rec = input;
+	const attachmentId = typeof rec.attachmentId === "string" ? rec.attachmentId : "";
+	if (!attachmentId) return void 0;
+	const attachment = {
+		attachmentId,
+		mediaType: typeof rec.mediaType === "string" && rec.mediaType.startsWith("image/") ? rec.mediaType : "image/png",
+		bytes: typeof rec.bytes === "number" ? rec.bytes : 0,
+		width: typeof rec.width === "number" ? rec.width : 0,
+		height: typeof rec.height === "number" ? rec.height : 0
+	};
+	if (typeof rec.name === "string" && rec.name) attachment.name = rec.name;
+	return {
+		type: "image",
+		attachment
+	};
+}
+function renderJsonAndImages(_args, value) {
+	const blocks = [{
+		type: "text",
+		text: JSON.stringify(value, null, 2)
+	}];
+	if (!value || typeof value !== "object") return blocks;
+	const rec = value;
+	const seen = /* @__PURE__ */ new Set();
+	const push = (raw) => {
+		const block = asImage(raw);
+		if (!block || seen.has(block.attachment.attachmentId)) return;
+		seen.add(block.attachment.attachmentId);
+		blocks.push(block);
+	};
+	if (Array.isArray(rec.outputs)) for (const item of rec.outputs) push(item);
+	push(rec);
+	return blocks;
+}
+const textRender = (_args, value) => [{
+	type: "text",
+	text: JSON.stringify(value, null, 2)
+}];
+//#endregion
 //#region src/tools/edit-section.ts
 const SIZES$1 = ["1024x1024", "1024x1536"];
 const MODES$1 = [
@@ -2151,10 +2264,6 @@ const LANGUAGES$1 = [
 	"ko"
 ];
 const MISSING_KEY$2 = "未配置图像 API Key（环境变量 MXPAGE_IMAGE_API_KEY）";
-const textRender$2 = (_args, value) => [{
-	type: "text",
-	text: JSON.stringify(value, null, 2)
-}];
 function editSectionTool(opts) {
 	return defineTool({
 		name: "mxpage_edit_section",
@@ -2200,7 +2309,7 @@ function editSectionTool(opts) {
 				type: "object",
 				additionalProperties: true
 			},
-			render: textRender$2
+			render: renderJsonAndImages
 		},
 		timeoutMs: 18e4,
 		isConcurrencySafe: () => false,
@@ -2458,10 +2567,6 @@ function readJobProgress(projectDir, jobId) {
 		return;
 	}
 }
-const textRender$1 = (_args, value) => [{
-	type: "text",
-	text: JSON.stringify(value, null, 2)
-}];
 function jobStatusTool(opts) {
 	return defineTool({
 		name: "mxpage_job_status",
@@ -2482,14 +2587,17 @@ function jobStatusTool(opts) {
 				type: "object",
 				additionalProperties: true
 			},
-			render: textRender$1
+			render: renderJsonAndImages
 		},
 		execute: async (args, exec) => {
 			const jobId = args.job_id;
 			const live = getLiveJob(jobId);
 			let file;
-			if (live) file = readJobProgress(live.projectDir, jobId);
-			else if (args.project_id) try {
+			let projectId = args.project_id;
+			if (live) {
+				file = readJobProgress(live.projectDir, jobId);
+				projectId = projectId || live.projectId;
+			} else if (args.project_id) try {
 				file = readJobProgress(opts.store.read(args.project_id).workspaceDir, jobId);
 			} catch {
 				file = void 0;
@@ -2505,12 +2613,19 @@ function jobStatusTool(opts) {
 				error: "MXPAGE_NOT_FOUND"
 			};
 			const error = file?.error ?? snapshot?.detail;
+			let outputs = [];
+			if (projectId) try {
+				outputs = opts.store.read(projectId).outputs ?? [];
+			} catch {
+				outputs = [];
+			}
 			return {
 				ok: true,
 				state: snapshot?.status ?? file?.state ?? "running",
 				progress: file?.progress ?? 0,
 				currentSection: file?.currentSection ?? "",
-				...error ? { error } : {}
+				...error ? { error } : {},
+				...outputs.length > 0 ? { outputs } : {}
 			};
 		}
 	});
@@ -2535,7 +2650,7 @@ function jobCancelTool(opts) {
 				type: "object",
 				additionalProperties: true
 			},
-			render: textRender$1
+			render: textRender
 		},
 		execute: async (args, exec) => {
 			const jobId = args.job_id;
@@ -2566,10 +2681,6 @@ function jobCancelTool(opts) {
 //#region src/tools/generate-page.ts
 const PAGE_KIND = "mxpage_page";
 const MISSING_KEY$1 = "未配置图像 API Key（环境变量 MXPAGE_IMAGE_API_KEY）";
-const textRender = (_args, value) => [{
-	type: "text",
-	text: JSON.stringify(value, null, 2)
-}];
 function abortError(message = "已取消") {
 	const err = new Error(message);
 	err.name = "AbortError";
@@ -2714,7 +2825,7 @@ async function runPageJob(deps, args, jobId, signal) {
 function generatePageTool(opts) {
 	return defineTool({
 		name: "mxpage_generate_page",
-		description: "Generate a full ecommerce detail page (analyze → plan → all heroes → details). Uses a background job and consumes image API quota. Default section_keys are planned modules without output/<key>.png. Returns { kind: \"background\", jobId }.",
+		description: "Generate ecommerce page images (analyze → plan → heroes → details). Starts a cancellable background job, waits until it finishes, and returns output attachment refs. Use section_keys for a subset (e.g. [\"hero_01\"] for a single 主图). Consumes image API quota.",
 		parameters: {
 			project_id: {
 				type: "string",
@@ -2732,7 +2843,7 @@ function generatePageTool(opts) {
 				type: "object",
 				additionalProperties: true
 			},
-			render: textRender
+			render: renderJsonAndImages
 		},
 		timeoutMs: 18e4,
 		isConcurrencySafe: () => false,
@@ -2774,6 +2885,8 @@ function generatePageTool(opts) {
 				sectionKeys
 			}, id, ac.signal));
 			work.catch(() => {});
+			const onAbort = () => ac.abort("tool-aborted");
+			exec.signal.addEventListener("abort", onAbort, { once: true });
 			try {
 				const jobId = opts.jobs.start({
 					kind: PAGE_KIND,
@@ -2790,18 +2903,44 @@ function generatePageTool(opts) {
 					})
 				});
 				registerLiveJob(jobId, {
+					projectId: record.id,
 					projectDir: record.workspaceDir,
 					abort: ac
 				});
 				resolveStart(jobId);
+				const outcome = await work.then(() => ({
+					status: "completed",
+					detail: void 0
+				}), (err) => {
+					return {
+						status: isAbortErr(err, ac.signal) ? "killed" : "failed",
+						detail: redactSecrets(String(err instanceof Error ? err.message : err))
+					};
+				});
+				if (exec.signal.aborted) throw abortError(outcome.detail);
+				const outputs = opts.store.read(projectId).outputs ?? [];
+				if (outcome.status !== "completed") return {
+					ok: false,
+					jobId,
+					projectId,
+					state: outcome.status,
+					error: outcome.detail ?? outcome.status,
+					outputs
+				};
 				return {
-					kind: "background",
-					jobId
+					ok: true,
+					jobId,
+					projectId,
+					state: "completed",
+					outputs
 				};
 			} catch (err) {
-				ac.abort();
+				if (!ac.signal.aborted) ac.abort();
+				if (err instanceof Error && err.name === "AbortError") throw err;
 				rejectStart(err);
 				throw err;
+			} finally {
+				exec.signal.removeEventListener("abort", onAbort);
 			}
 		}
 	});
@@ -2849,10 +2988,7 @@ function generateSectionTool(opts) {
 				type: "object",
 				additionalProperties: true
 			},
-			render: (_args, value) => [{
-				type: "text",
-				text: JSON.stringify(value, null, 2)
-			}]
+			render: renderJsonAndImages
 		},
 		timeoutMs: 18e4,
 		isConcurrencySafe: () => false,
@@ -2952,7 +3088,7 @@ function planPageTool(opts) {
 function projectStatusTool(opts) {
 	return defineTool({
 		name: "mxpage_project_status",
-		description: "Read-only mxpage project status. Safe to call at status=created, before analyze. Returns assets and generated sections (key, outputPath, versionId).",
+		description: "Read-only mxpage project status. Safe to call at status=created, before analyze. Returns assets, generated sections, and image attachment refs for the GUI.",
 		parameters: { project_id: {
 			type: "string",
 			required: true,
@@ -2963,10 +3099,7 @@ function projectStatusTool(opts) {
 				type: "object",
 				additionalProperties: true
 			},
-			render: (_args, value) => [{
-				type: "text",
-				text: JSON.stringify(value, null, 2)
-			}]
+			render: renderJsonAndImages
 		},
 		execute: async (args) => {
 			const record = opts.store.read(args.project_id);
@@ -2977,7 +3110,8 @@ function projectStatusTool(opts) {
 				aspectRatio: record.aspectRatio,
 				mainAssetPath: record.mainAssetPath,
 				assets: record.assets,
-				sections: listOutputSections(record.workspaceDir)
+				sections: listOutputSections(record.workspaceDir),
+				outputs: record.outputs ?? []
 			};
 		}
 	});

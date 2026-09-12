@@ -11,7 +11,7 @@ const MODES = ['repaint', 'enhance', 'translate'] as const
 const LANGUAGES = ['zh-CN', 'en', 'ja', 'ko'] as const
 const MISSING_KEY = '未配置图像 API Key（环境变量 MXPAGE_IMAGE_API_KEY）'
 
-const textRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
+import { renderJsonAndImages } from './render.ts'
 
 export function editSectionTool(opts: {
   store: ProjectStore
@@ -39,7 +39,7 @@ export function editSectionTool(opts: {
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
-      render: textRender,
+      render: renderJsonAndImages,
     },
     timeoutMs: 180_000,
     isConcurrencySafe: () => false,

@@ -29,6 +29,7 @@ export interface JobProgress {
 }
 
 export interface LiveJob {
+  projectId: string
   projectDir: string
   abort: AbortController
 }
@@ -91,7 +92,7 @@ export function readJobProgress(projectDir: string, jobId: string): JobProgress 
   }
 }
 
-const textRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
+import { renderJsonAndImages, textRender } from './render.ts'
 
 export function jobStatusTool(opts: {
   store: ProjectStore
@@ -106,14 +107,16 @@ export function jobStatusTool(opts: {
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
-      render: textRender,
+      render: renderJsonAndImages,
     },
     execute: async (args, exec) => {
       const jobId = args.job_id
       const live = getLiveJob(jobId)
       let file: JobProgress | undefined
+      let projectId = args.project_id
       if (live) {
         file = readJobProgress(live.projectDir, jobId)
+        projectId = projectId || live.projectId
       } else if (args.project_id) {
         try {
           const record = opts.store.read(args.project_id)
@@ -130,12 +133,21 @@ export function jobStatusTool(opts: {
       }
       if (!file && !snapshot) return { ok: false, error: 'MXPAGE_NOT_FOUND' }
       const error = file?.error ?? snapshot?.detail
+      let outputs: unknown[] = []
+      if (projectId) {
+        try {
+          outputs = opts.store.read(projectId).outputs ?? []
+        } catch {
+          outputs = []
+        }
+      }
       return {
         ok: true,
         state: snapshot?.status ?? file?.state ?? 'running',
         progress: file?.progress ?? 0,
         currentSection: file?.currentSection ?? '',
         ...(error ? { error } : {}),
+        ...(outputs.length > 0 ? { outputs } : {}),
       }
     },
   })
