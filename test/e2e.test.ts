@@ -23,6 +23,7 @@ import { createAssetStore } from '../src/core/services/asset-store.ts'
 import { createGenerationService } from '../src/core/services/generation-service.ts'
 import { createPlannerService } from '../src/core/services/planner-service.ts'
 import { createTaskService } from '../src/core/services/task-service.ts'
+import { createXiaohongshuService } from '../src/core/services/xiaohongshu-service.ts'
 import type { CoreHost } from '../src/core/ports/index.ts'
 import { createMxpageRuntime } from '../src/host/index.ts'
 import { createFileLogger } from '../src/host/logger.ts'
@@ -104,6 +105,40 @@ async function startMockServer(): Promise<MockServer> {
                       'A polished mobile commerce hero image of the product on a soft studio backdrop, with a bold Chinese headline and two selling-point callouts.',
                     negativePrompt: 'no garbled text, no floating product',
                     qualityChecklist: ['clear headline', 'product in focus'],
+                  }),
+                },
+              },
+            ],
+          })
+          return
+        }
+
+        // Xiaohongshu planning
+        if (userPrompt.includes('小红书') || userPrompt.includes('Xiaohongshu')) {
+          json({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    topic: 'mock 选题',
+                    audience: '通勤人群',
+                    coreInsight: '省心',
+                    titleOptions: ['标题 A', '标题 B'],
+                    coverTitle: '封面标题',
+                    coverSubtitle: '封面副标题',
+                    pages: [1, 2, 3].map((pageNumber) => ({
+                      pageNumber,
+                      title: `第 ${pageNumber} 页标题`,
+                      subtitle: `第 ${pageNumber} 页副标题`,
+                      body: `第 ${pageNumber} 页正文`,
+                      visualDirection: '清爽生活方式',
+                      layout: '上图下文',
+                      imagePrompt: `第 ${pageNumber} 页的配图提示词，干净的浅色背景，主体居中。`,
+                      negativePrompt: '不要乱码',
+                    })),
+                    caption: '正文文案',
+                    hashtags: ['#通勤', '#好物'],
+                    exportNote: 'mock',
                   }),
                 },
               },
@@ -544,6 +579,53 @@ test('end-to-end: a second generation creates v2 and never overwrites v1', async
       first.imageAsset.id,
     )
     assert.equal(readdirSync(dir).length, 2)
+  } finally {
+    await server.close()
+    rmSync(store, { recursive: true, force: true })
+  }
+})
+
+
+test('end-to-end: the Xiaohongshu four-step flow plans, generates and edits', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'mxpage-e2e-xhs-'))
+  const server = await startMockServer()
+  try {
+    const h = buildHarness(store, server.baseUrl)
+    const xhs = createXiaohongshuService(h.host)
+
+    // Step 1 - plan
+    const plan = await xhs.planXiaohongshuPost({
+      topic: '秋冬通勤保温杯怎么选',
+      imageCount: 3,
+      imageAspectRatio: '3:4',
+    })
+    assert.equal(plan.pages.length, 3, 'the plan must pad/crop to imageCount')
+    for (const page of plan.pages) {
+      assert.ok(page.title, 'every page needs a title')
+      assert.ok(page.imagePrompt, 'every page needs an imagePrompt')
+    }
+
+    // Step 2 - review is pure UI; step 3 - generate
+    const pages = await xhs.generateXiaohongshuImages(plan, [], { imageAspectRatio: '3:4' })
+    assert.equal(pages.length, 3)
+    for (const page of pages) {
+      assert.match(page.imageUrl, /^data:image\/png;base64,/, 'b64 results must be data URLs')
+      assert.ok(page.model, 'the used model must be reported')
+    }
+
+    // Step 4 - edit one page
+    const edited = await xhs.editXiaohongshuImage({
+      imageUrl: pages[0]!.imageUrl,
+      prompt: '把标题换成更口语的说法',
+      imageAspectRatio: '3:4',
+    })
+    assert.match(edited.imageUrl, /^data:image\/png;base64,/)
+    assert.ok(edited.model)
+
+    // The flow is HTTP-only: it must never create a project or touch storage.
+    assert.equal((await h.host.repository.project.list()).length, 0, 'XHS creates no project')
+    const onDisk = readdirSync(store).filter((name) => name === 'generated')
+    assert.equal(onDisk.length, 0, 'XHS writes no generated assets')
   } finally {
     await server.close()
     rmSync(store, { recursive: true, force: true })
