@@ -29,9 +29,9 @@ interface RegisteredTool {
 /** Minimal stand-in for the Cordis context a DSH host hands to `apply`. */
 function createMockContext() {
   const registered: RegisteredTool[] = []
+  const routes: Array<{ kind?: string; path?: string; handler?: unknown }> = []
   const injected: string[][] = []
   let effectRan = false
-  let disposed = false
 
   const ctx = {
     inject(names: string[], callback: (ctx: unknown) => void) {
@@ -41,10 +41,7 @@ function createMockContext() {
     effect(callback: () => (() => void) | void) {
       effectRan = true
       const disposer = callback()
-      return () => {
-        disposed = true
-        disposer?.()
-      }
+      return () => disposer?.()
     },
     tools: {
       register(tool: unknown) {
@@ -63,12 +60,18 @@ function createMockContext() {
         return undefined
       },
     },
-    get() {
-      return undefined
+    webServer: {
+      register(route: unknown) {
+        routes.push(route as { path?: string })
+        return () => {}
+      },
+    },
+    get(name: string) {
+      return name === 'webServer' ? ctx.webServer : undefined
     },
   }
 
-  return { ctx, registered, injected, effectRan: () => effectRan, disposed: () => disposed }
+  return { ctx, registered, routes, injected, effectRan: () => effectRan }
 }
 
 test('built bundle applies and registers the full mxpage_* surface', async (t) => {
@@ -137,6 +140,34 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
 
     // The workspace root must have been created under the configured dir.
     assert.ok(existsSync(store), 'workspace dir should exist')
+
+    // The browser panel's data API must be mounted on the host webServer.
+    const paths = mock.routes.map((route) => route.path).filter(Boolean) as string[]
+    assert.ok(paths.length >= 20, `expected the panel API routes, found ${paths.length}`)
+    for (const expected of [
+      '/api/dsh-mxpage/projects',
+      '/api/dsh-mxpage/projects/create',
+      '/api/dsh-mxpage/project',
+      '/api/dsh-mxpage/analyze',
+      '/api/dsh-mxpage/plan',
+      '/api/dsh-mxpage/generate',
+      '/api/dsh-mxpage/edit',
+      '/api/dsh-mxpage/generate-page',
+      '/api/dsh-mxpage/job',
+      '/api/dsh-mxpage/versions',
+      '/api/dsh-mxpage/export',
+      '/api/dsh-mxpage/image',
+      '/api/dsh-mxpage/channels',
+      '/api/dsh-mxpage/xiaohongshu/plan',
+      '/api/dsh-mxpage/xiaohongshu/generate',
+      '/api/dsh-mxpage/xiaohongshu/edit',
+    ]) {
+      assert.ok(paths.includes(expected), `missing panel route ${expected}`)
+    }
+    for (const route of mock.routes) {
+      assert.equal(route.kind, 'exact', `${route.path} must be an exact route`)
+      assert.equal(typeof route.handler, 'function', `${route.path} must have a handler`)
+    }
   } finally {
     rmSync(store, { recursive: true, force: true })
   }

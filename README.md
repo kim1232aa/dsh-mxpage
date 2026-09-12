@@ -144,6 +144,35 @@ under `$DSH_HOME/mxpage/projects/<projectId>/` and returned as attachments.
 
 ---
 
+## Panel — the four screens
+
+The plugin ships a browser half (`lib/client.js`) that mounts a workbench into
+the DSH centre column, with a sidebar toggle. This is the part upstream MxPage
+actually lives in: a stateful workspace, not a prompt wrapper.
+
+| Screen | What it does |
+|---|---|
+| **规划** | Output config (hero/detail counts, aspect, in-image language), analyze → plan, the project-level visual style guide, the section list with per-section generation and a whole-page job |
+| **编辑** | Per-section preview, inline editing of title/goal/copy/visualPrompt, generate / regenerate / repaint / enhance / translate, and the version list with activate |
+| **小红书** | The four-step carousel flow: plan → review each `imagePrompt` → generate → edit, with per-page download |
+| **渠道** | Channel diagnostics: the active channel, its model catalog, image/vision/text counts, per-channel key presence, and the quota-rotation note |
+
+Re-planning is guarded behind an explicit confirmation, because it deletes every
+section, version and generated image in the project.
+
+**Build-format note.** The DSH web shell does **not** load client halves as ESM.
+It hands each bundle a `window.__ModuleLoader__.load({ id, factory })` façade and
+a `require` that resolves the shell's live module table. `tsdown` therefore emits
+the browser half as CJS into `lib/client.raw.cjs`, and
+`scripts/wrap-client.mjs` wraps it into the envelope. `test/client-bundle.test.ts`
+loads the built bundle through a simulated façade and asserts `apply` + `inject`
+come back — that test exists because an ESM bundle would silently never apply.
+
+The panel's data API lives at `/api/dsh-mxpage/*` (`src/host/routes.ts`),
+registered on the host `webServer` and fenced to loopback requests.
+
+---
+
 ## Tools (all `mxpage_*`)
 
 | Tool | Role |

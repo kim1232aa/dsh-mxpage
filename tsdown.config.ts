@@ -6,11 +6,11 @@ import { defineConfig } from 'tsdown'
 
 // Two bundles, mirroring the DSH plugin convention used by
 // `@dickpy/dsh-imagegen` and `dsh-model-detector`:
-//   lib/index.js   host half    (tools, tasks, filesystem, upstream APIs)
-//   lib/client.js  browser half (Studio panel)
+//   lib/index.js   host half   (tools, tasks, filesystem, upstream APIs) — plain ESM
+//   lib/client.js  browser half (panel) — NOT ESM; see below
 //
-// Everything the host provides is `external` — it is injected by the DSH loader
-// at runtime and must never be inlined into the bundle.
+// Everything the host provides is `external` — it is injected by the DSH
+// loader at runtime and must never be inlined.
 const here = dirname(fileURLToPath(import.meta.url))
 
 const hostExternal = [
@@ -18,6 +18,7 @@ const hostExternal = [
   '@deepseek-ai/dsh-tools',
   '@deepseek-ai/dsh-attachment',
   '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-host-webserver',
   'schemastery',
 ]
 
@@ -29,7 +30,6 @@ const clientExternal = [
   '@deepseek-ai/dsh-client-connection',
   'react',
   'react-dom',
-  'schemastery',
 ]
 
 export default defineConfig([
@@ -43,13 +43,16 @@ export default defineConfig([
     sourcemap: false,
     external: hostExternal,
   },
-  // tsdown fails hard on a missing entry, so the browser half is only declared
-  // once it exists.
+  // The DSH web shell does not load client halves as ESM. It expects
+  //   window.__ModuleLoader__.load({ id, factory: (require) => module.exports })
+  // so the browser bundle is emitted as CJS into an intermediate file and then
+  // wrapped by scripts/wrap-client.mjs. tsdown fails hard on a missing entry, so
+  // the browser half is only declared once it exists.
   ...(existsSync(join(here, 'src/client/index.ts'))
     ? [
         {
-          entry: { client: 'src/client/index.ts' },
-          format: ['esm' as const],
+          entry: { 'client.raw': 'src/client/index.ts' },
+          format: ['cjs' as const],
           platform: 'browser' as const,
           outDir: 'lib',
           clean: false,
