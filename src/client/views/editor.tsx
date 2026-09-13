@@ -46,7 +46,9 @@ export function EditorView(props: {
           <div style={{ color: T.muted, fontSize: 11.5, fontWeight: 700, padding: '0 4px 8px' }}>
             分区（{detail.sections.length}）
           </div>
-          <div style={{ overflowY: 'auto', display: 'grid', gap: 6, flex: '1 1 auto' }}>
+          {/* alignContent:'start' — otherwise the grid stretches section rows
+              to fill the column, spreading a few cards across the full height. */}
+          <div style={{ overflowY: 'auto', display: 'grid', gap: 6, flex: '1 1 auto', alignContent: 'start' }}>
             {detail.sections.map((section) => (
               <button
                 key={section.id}
@@ -161,7 +163,7 @@ function SectionEditor(props: {
     })
 
   return (
-    <div style={{ flex: '1 1 auto', minWidth: 0, overflowY: 'auto', display: 'grid', gap: 16 }}>
+    <div style={{ flex: '1 1 auto', minWidth: 0, overflowY: 'auto', display: 'grid', gap: 16, alignContent: 'start' }}>
       {note ? <Notice kind="success">{note}</Notice> : null}
 
       <div style={{ ...styles.card, display: 'flex', gap: 18, alignItems: 'flex-start' }}>

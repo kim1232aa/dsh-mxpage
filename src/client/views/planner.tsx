@@ -322,7 +322,9 @@ function ModuleTree(props: { sections: SectionView[]; selectedId: string | null;
           查看模块顺序、生成状态和当前选中的编辑对象。
         </div>
       </div>
-      <div style={{ overflowY: 'auto', display: 'grid', gap: 8, flex: '1 1 auto' }}>
+      {/* alignContent:'start' — otherwise the grid stretches module rows to
+          fill the column height. */}
+      <div style={{ overflowY: 'auto', display: 'grid', gap: 8, flex: '1 1 auto', alignContent: 'start' }}>
         {sections.map((section, index) => (
           <button
             key={section.id}

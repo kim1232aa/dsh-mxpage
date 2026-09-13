@@ -141,7 +141,10 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
           <div style={{ fontSize: 11, color: T.muted, fontWeight: 700, padding: '10px 10px 6px' }}>
             项目（{projects.length}）
           </div>
-          <div style={{ display: 'grid', gap: 2, overflowY: 'auto', flex: '1 1 auto', minHeight: 60 }}>
+          {/* alignContent:'start' — a plain grid inside a taller flex column
+              stretches its rows to fill the height (default align-content:
+              stretch), which rendered each project as a giant pink block. */}
+          <div style={{ display: 'grid', gap: 2, overflowY: 'auto', flex: '1 1 auto', minHeight: 60, alignContent: 'start' }}>
             {projects.map((project) => (
               <button
                 key={project.id}
