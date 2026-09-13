@@ -18,7 +18,7 @@ import { randomBytes } from 'node:crypto'
 import type { CoreHost } from '../ports/index.ts'
 import { normalizeRelPath } from '../ports/storage.ts'
 import type { AssetType, ProductAsset } from '../types/domain.ts'
-import { extFromMime, sanitizeFileName } from '../utils/files.ts'
+import { extFromMime, sanitizeFileName, sniffImageMime } from '../utils/files.ts'
 
 export const STORAGE_DIRS = {
   uploads: 'uploads',
@@ -125,9 +125,26 @@ export function createAssetStore(host: CoreHost): AssetStore {
     async saveGeneratedImage(params) {
       await ensureScaffold()
 
+      // Bytes first: the declared mime may lie (relays fronting grok-imagine
+      // return JPEG while callers assume PNG), so the real magic bytes win.
+      let bytes: Buffer | null = null
+      if (params.source.svgText) bytes = Buffer.from(params.source.svgText, 'utf8')
+      else if (params.source.b64Json) bytes = Buffer.from(params.source.b64Json, 'base64')
+      else if (params.source.url) {
+        const response = await fetch(params.source.url)
+        if (!response.ok) {
+          throw new Error(`Failed to download generated image: ${response.status}`)
+        }
+        bytes = Buffer.from(await response.arrayBuffer())
+      }
+      if (!bytes) {
+        throw new Error('Image generation produced no usable image output.')
+      }
+
+      const sniffed = params.source.svgText ? null : sniffImageMime(bytes)
       const mimeType = params.source.svgText
         ? 'image/svg+xml'
-        : (params.source.mimeType ?? 'image/png')
+        : (sniffed ?? params.source.mimeType ?? 'image/png')
       const ext = extFromMime(mimeType)
       const fileName = `${Date.now()}-${suffix()}.${ext}`
       const relativePath = toPosix(
@@ -137,19 +154,7 @@ export function createAssetStore(host: CoreHost): AssetStore {
         fileName,
       )
 
-      if (params.source.svgText) {
-        await storage.write(relativePath, Buffer.from(params.source.svgText, 'utf8'))
-      } else if (params.source.b64Json) {
-        await storage.write(relativePath, Buffer.from(params.source.b64Json, 'base64'))
-      } else if (params.source.url) {
-        const response = await fetch(params.source.url)
-        if (!response.ok) {
-          throw new Error(`Failed to download generated image: ${response.status}`)
-        }
-        await storage.write(relativePath, Buffer.from(await response.arrayBuffer()))
-      } else {
-        throw new Error('Image generation produced no usable image output.')
-      }
+      await storage.write(relativePath, bytes)
 
       return repository.asset.create({
         projectId: params.projectId,

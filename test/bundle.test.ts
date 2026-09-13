@@ -17,6 +17,20 @@ test('package.json declares the DSH bundle patch and a lib/ output', () => {
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(pkg.main, 'lib/index.js')
   assert.equal(pkg.exports['./client'], './lib/client.js')
+  // The settings card is a browser-side contribution. Without these packages
+  // in dsh.client.inject the shell never loads settingsScope / slots into the
+  // plugin's client fiber, so 设置 → 插件 → MxPage stays empty even though
+  // the host half registered the namespace.
+  const clientInject = pkg.dsh.client.inject as string[]
+  for (const required of [
+    '@deepseek-ai/dsh-client-connection',
+    '@deepseek-ai/dsh-client-store',
+    '@deepseek-ai/dsh-client-ui-settings',
+    '@deepseek-ai/dsh-client-ui-settings-plugins',
+    '@deepseek-ai/dsh-client-ui-slots',
+  ]) {
+    assert.ok(clientInject.includes(required), `dsh.client.inject must include ${required}`)
+  }
 })
 
 test('peerDependencies use the real host package names', () => {

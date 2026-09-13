@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react'
 
 import type { ChannelDiagnostics, MxpageApi } from '../api.ts'
-import { Badge, Button, Notice, styles, T } from '../ui.tsx'
+import { Badge, Button, Notice, SectionHeading, styles, T } from '../ui.tsx'
 
 export function ChannelsView(props: { api: MxpageApi }) {
   const { api } = props
@@ -32,7 +32,8 @@ export function ChannelsView(props: { api: MxpageApi }) {
   useEffect(load, [api])
 
   return (
-    <div style={{ display: 'grid', gap: 14 }}>
+    <div style={{ padding: 24, maxWidth: 760, display: 'grid', gap: 16 }}>
+      <SectionHeading eyebrow="系统设置" title="AI 配置" description="渠道用于连接图像/文本模型服务，在设置中配置后即可在此诊断。" />
       <div style={styles.card}>
         <div style={{ ...styles.row, justifyContent: 'space-between', marginBottom: 8 }}>
           <strong>渠道</strong>

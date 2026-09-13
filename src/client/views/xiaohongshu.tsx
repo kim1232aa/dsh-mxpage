@@ -13,7 +13,7 @@
 import { useState } from 'react'
 
 import type { MxpageApi, XiaohongshuPage, XiaohongshuPlan } from '../api.ts'
-import { Badge, Button, Field, Notice, styles, T } from '../ui.tsx'
+import { Badge, Button, Field, Notice, SectionHeading, styles, T } from '../ui.tsx'
 
 const ASPECTS = ['3:4', '1:1', '9:16'] as const
 
@@ -82,21 +82,14 @@ export function XiaohongshuView(props: {
   }
 
   return (
-    <div>
-      <div style={{ ...styles.row, marginBottom: 14 }}>
+    <div style={{ padding: 24, maxWidth: 880 }}>
+      <SectionHeading eyebrow="内容创作" title="小红书图文" description="规划 → 审阅 → 生成 → 改图，四步走完成一组种草笔记配图。链路不落盘、不建项目，图只以引用形式返回。" />
+      <div style={{ ...styles.row, marginBottom: 18 }}>
         {([1, 2, 3, 4] as Step[]).map((value) => (
-          <Button
-            key={value}
-            variant="ghost"
-            active={step === value}
-            onClick={() => setStep(value)}
-          >
+          <Button key={value} active={step === value} onClick={() => setStep(value)}>
             {value === 1 ? '① 规划' : value === 2 ? '② 审阅' : value === 3 ? '③ 生成' : '④ 改图'}
           </Button>
         ))}
-        <span style={{ color: T.muted, fontSize: 12, marginLeft: 'auto' }}>
-          小红书链路不落盘、不建项目，图只以引用形式返回
-        </span>
       </div>
 
       {note ? <Notice kind="info">{note}</Notice> : null}
@@ -132,7 +125,7 @@ export function XiaohongshuView(props: {
               </select>
             </Field>
           </div>
-          <Button variant="primary" disabled={!topic.trim() || busy !== null} onClick={doPlan}>
+          <Button variant="dark" full disabled={!topic.trim() || busy !== null} onClick={doPlan} style={{ marginTop: 6 }}>
             {busy === 'xhs-plan' ? '规划中…' : '开始规划'}
           </Button>
           <div style={{ color: T.muted, fontSize: 12, marginTop: 8 }}>
@@ -169,7 +162,7 @@ export function XiaohongshuView(props: {
             ))}
           </div>
           <div style={{ ...styles.row, marginTop: 12 }}>
-            <Button variant="primary" disabled={busy !== null} onClick={() => setStep(3)}>
+            <Button variant="dark" disabled={busy !== null} onClick={() => setStep(3)}>
               确认，进入生成
             </Button>
             <Button variant="ghost" onClick={() => setStep(1)}>
@@ -186,7 +179,7 @@ export function XiaohongshuView(props: {
             每页都会先跑 Visual Prompt Agent。**消耗付费图像额度** —— 确认后再开始。
           </Notice>
           <div style={{ ...styles.row }}>
-            <Button variant="primary" disabled={!plan || busy !== null} onClick={doGenerate}>
+            <Button variant="dark" disabled={!plan || busy !== null} onClick={doGenerate}>
               {busy === 'xhs-generate' ? '生成中…' : `生成 ${plan?.pages.length ?? 0} 页`}
             </Button>
             <Button variant="ghost" onClick={() => setStep(2)}>
@@ -256,7 +249,7 @@ export function XiaohongshuView(props: {
             />
           </Field>
           <div style={styles.row}>
-            <Button variant="primary" disabled={!editPrompt.trim() || busy !== null} onClick={doEdit}>
+            <Button variant="dark" disabled={!editPrompt.trim() || busy !== null} onClick={doEdit}>
               {busy === 'xhs-edit' ? '修改中…' : '提交修改'}
             </Button>
             <Button variant="ghost" onClick={() => setEditTarget(null)}>

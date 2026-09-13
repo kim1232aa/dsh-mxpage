@@ -20,7 +20,7 @@
 import type { JobKindMap, JobOutcome } from '@deepseek-ai/dsh-jobs'
 
 import type { Repository } from '../core/ports/repository.ts'
-import type { TaskHandle, TaskRunner, TaskSpec } from '../core/ports/tasks.ts'
+import type { TaskHandle, TaskRunner, TaskSpec, TaskState } from '../core/ports/tasks.ts'
 import { TaskCanceledError, isTaskCanceledError } from '../core/ports/tasks.ts'
 
 // Custom kinds must be declaration-merged; the registry treats each value as an
@@ -168,6 +168,31 @@ export function createJobsTaskRunner(options: JobsTaskRunnerOptions): TaskRunner
         }
       } catch {
         return undefined
+      }
+    },
+
+    /**
+     * Lifecycle as the registry sees it. Unlike `get()`, a settled job still
+     * answers: the registry retains the record after the live handle is
+     * released, which is what the `/job` route polls after completion.
+     */
+    status(id: string): TaskState {
+      const live = handles.get(id)
+      if (live) return live.cancelled ? 'stopping' : 'running'
+      try {
+        const snapshot = jobs.get(id, options.resolveOwner?.() ?? options.owner)
+        switch (snapshot.status) {
+          case 'running':
+          case 'stopping':
+          case 'completed':
+          case 'failed':
+          case 'killed':
+            return snapshot.status
+          default:
+            return 'unknown'
+        }
+      } catch {
+        return 'unknown'
       }
     },
   }

@@ -266,6 +266,29 @@ function extractImageResult(payload: {
   };
 }
 
+function isGrokImageModel(model: string): boolean {
+  return /grok|imagine/i.test(model);
+}
+
+/**
+ * Channel-compatibility hints applied to every image request body:
+ * - `response_format: 'b64_json'` — gateways fronting xAI return an imgen.x.ai
+ *   URL otherwise, and that CDN is unreachable from many networks (the bytes
+ *   must ride inside the API response). gpt-image models reject the parameter,
+ *   so it is skipped for them.
+ * - `aspect_ratio` — grok-imagine silently ignores `size` (always 3:2/2:3) and
+ *   only honors `aspect_ratio`.
+ */
+function withChannelHints<T extends Record<string, unknown>>(body: T, model: string, aspectRatio?: string): T {
+  if (!isOpenAiGptImageModel(model)) {
+    (body as Record<string, unknown>).response_format = "b64_json";
+  }
+  if (isGrokImageModel(model) && aspectRatio) {
+    (body as Record<string, unknown>).aspect_ratio = aspectRatio;
+  }
+  return body;
+}
+
 function extractGoogleImageResult(payload: any): ImageGenerationResult {
   const parts = payload?.candidates?.[0]?.content?.parts ?? [];
 
@@ -1149,11 +1172,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     monitor?: AiMonitorContext;
     signal?: AbortSignal;
   }) {
-    const fields = {
+    const fields = withChannelHints({
       model: input.model,
       prompt: input.prompt,
       size: resolveOpenAiSize(input),
-    };
+    }, input.model, input.aspectRatio) as Record<string, string>;
     const errors: string[] = [];
 
     for (const imageFieldName of ["image[]", "image"] as const) {
@@ -1225,43 +1248,44 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
       const imageRefs = toImageRefs(referenceImages);
 
+      const hint = (body: Record<string, unknown>) => withChannelHints(body, input.model, input.aspectRatio);
       for (const attempt of [
         {
           path: "/images/edits",
-          body: {
+          body: hint({
             model: input.model,
             prompt: input.prompt,
             size: resolveOpenAiSize(input),
             images: imageRefs,
-          },
+          }),
         },
         {
           path: "/images/edits",
-          body: {
+          body: hint({
             model: input.model,
             prompt: input.prompt,
             size: resolveOpenAiSize(input),
             images: imageRefs,
             input_fidelity: "high",
-          },
+          }),
         },
         {
           path: "/images/generations",
-          body: {
+          body: hint({
             model: input.model,
             prompt: input.prompt,
             size: resolveOpenAiSize(input),
             reference_images: imageRefs,
-          },
+          }),
         },
         {
           path: "/images/generations",
-          body: {
+          body: hint({
             model: input.model,
             prompt: input.prompt,
             size: resolveOpenAiSize(input),
             input_images: imageRefs,
-          },
+          }),
         },
       ]) {
         try {
@@ -1287,11 +1311,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
       }>("/images/generations", {
         method: "POST",
-        body: JSON.stringify({
+        body: JSON.stringify(withChannelHints({
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
-        }),
+        }, input.model, input.aspectRatio)),
         signal: input.signal,
       }, input.timeoutMs ?? 120000, input.monitor);
 
@@ -1350,37 +1374,38 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       }
     }
 
+    const hint = (body: Record<string, unknown>) => withChannelHints(body, input.model, input.aspectRatio);
     const attempts = [
       {
         path: "/images/edits",
-        body: {
+        body: hint({
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
           images: imageRefs,
           ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
-        },
+        }),
       },
       {
         path: "/images/edits",
-        body: {
+        body: hint({
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
           images: imageRefs,
           input_fidelity: "high",
           ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
-        },
+        }),
       },
       {
         path: "/images/generations",
-        body: {
+        body: hint({
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
           reference_images: imageRefs,
           ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
-        },
+        }),
       },
     ];
 

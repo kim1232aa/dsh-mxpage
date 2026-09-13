@@ -309,3 +309,97 @@ test('the injected stylesheet never hides anything outside the panel selector', 
     restore()
   }
 })
+
+// ---------------------------------------------------------------------------
+// INCIDENT REGRESSION: 设置 → 插件 → MxPage had no card.
+//
+// Host `ctx.settings.installSection` makes the `mxpage` namespace exist, but
+// the visible card is a browser-side contribution to `settings.plugin.item`
+// keyed by that same namespace. An earlier client half only DOM-mounted the
+// panel / sidebar toggle and never called `ctx.slots` / `ctx.settingsScope`,
+// so the configurable-plugins tab rendered nothing for `mxpage`. This test
+// actually drives `ctx.inject(['settingsScope','slots'], cb)` instead of
+// stubbing it as a no-op.
+// ---------------------------------------------------------------------------
+
+test('apply() registers a settings.plugin.item card keyed mxpage', async (t) => {
+  if (!existsSync(bundlePath)) {
+    t.skip('lib/client.js missing — run `npm run build`')
+    return
+  }
+  const restore = installDomStub()
+  try {
+    const { registrations } = await loadClientBundle()
+    const nodeRequire = createRequire(import.meta.url)
+    const exports = registration0(registrations).factory((specifier) => {
+      if (specifier.startsWith('react')) return nodeRequire(specifier)
+      throw new Error(`unexpected ${specifier}`)
+    })
+
+    const slotRegistrations: Array<{
+      name?: string
+      key?: string
+      inject?: () => { scope?: unknown }
+    }> = []
+    const injected: string[][] = []
+    const bindCalls: Array<{ namespace?: string }> = []
+
+    const fakeScope = {
+      namespace: 'mxpage',
+      subscribe: () => () => {},
+      getSnapshot: () => ({
+        status: 'ready',
+        value: { channels: [] },
+        base: {},
+        user: {},
+        revision: 0,
+        writable: true,
+        mode: 'host',
+      }),
+      mutate: async () => {},
+    }
+
+    const sctx = {
+      settingsScope: {
+        bind(spec: { namespace: string }) {
+          bindCalls.push(spec)
+          return fakeScope
+        },
+      },
+      slots: {
+        inject(name: string, factory: () => () => void) {
+          assert.equal(name, 'settings.plugin.item')
+          return factory()
+        },
+        register(options: { name: string; key: string; inject?: () => { scope?: unknown } }) {
+          slotRegistrations.push(options)
+          return () => {}
+        },
+      },
+      effect(callback: () => (() => void) | void) {
+        return callback()
+      },
+    }
+
+    const ctx = {
+      get: () => undefined,
+      effect() {},
+      inject(names: string[], callback: (child: unknown) => void) {
+        injected.push(names)
+        callback(sctx)
+      },
+    }
+
+    ;(exports.apply as (ctx: unknown) => void)(ctx)
+
+    assert.deepEqual(injected, [['settingsScope', 'slots']])
+    assert.deepEqual(bindCalls, [{ namespace: 'mxpage' }])
+    assert.equal(slotRegistrations.length, 1, 'exactly one settings.plugin.item registration')
+    assert.equal(slotRegistrations[0]?.name, 'settings.plugin.item')
+    assert.equal(slotRegistrations[0]?.key, 'mxpage')
+    const injectedProps = slotRegistrations[0]?.inject?.()
+    assert.equal(injectedProps?.scope, fakeScope, 'the card must receive the bound mxpage scope')
+  } finally {
+    restore()
+  }
+})

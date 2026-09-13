@@ -32,6 +32,7 @@ import { createJsonRepository } from './repository.ts'
 import { createFileStorageDriver } from './storage-driver.ts'
 import { createJobsTaskRunner, type JobsRegistryLike } from './jobs-task-runner.ts'
 import { createQueuedTaskRunner } from './task-runner.ts'
+import { createFallbackTaskRunner } from './fallback-task-runner.ts'
 
 export interface MxpageRuntime {
   host: Required<CoreHost>
@@ -73,17 +74,24 @@ export function createMxpageRuntime(
   const provider = createProviderResolver({ config, logger })
   // Prefer the host job registry: the shell then owns job identity, session
   // scoping, lifecycle, completion notices and owner-disposal cancellation.
-  // The local queue is the fallback for hosts without a `jobs` service.
+  // The local queue is the fallback — both for hosts without a `jobs` service
+  // and for profiles where the registry exists but refuses this plugin's work
+  // ("no job controller serves this agent" surfaces only as a synchronous
+  // throw from `start`, hence the wrapping fallback runner).
+  const localRunner = createQueuedTaskRunner({
+    repository,
+    concurrency: Math.max(1, config.maxParallelSections),
+  })
   const runner = options.jobs
-    ? createJobsTaskRunner({
-        jobs: options.jobs,
-        repository,
-        resolveOwner: options.resolveOwner,
-      })
-    : createQueuedTaskRunner({
-        repository,
-        concurrency: Math.max(1, config.maxParallelSections),
-      })
+    ? createFallbackTaskRunner(
+        createJobsTaskRunner({
+          jobs: options.jobs,
+          repository,
+          resolveOwner: options.resolveOwner,
+        }),
+        localRunner,
+      )
+    : localRunner
 
   const host: Required<CoreHost> = { repository, storage, provider, logger, tasks: runner }
 

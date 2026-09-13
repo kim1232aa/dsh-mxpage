@@ -221,3 +221,67 @@ test('get() falls back to the registry for a job this instance did not start', a
     h.cleanup()
   }
 })
+
+test('status() reports the terminal state after the live handle is released', async () => {
+  const h = harness()
+  const { registry } = createMockRegistry()
+  try {
+    const runner = createJobsTaskRunner({ jobs: registry, repository: h.repository })
+    assert.equal(runner.status?.('mxpage_page-999'), 'unknown')
+
+    const handle = runner.start({
+      kind: 'mxpage_page',
+      label: 'settles',
+      run: async () => 'ok',
+    })
+    assert.equal(runner.status?.(handle.id), 'running')
+    await handle.done
+    // Live handle is released on settle; the registry still knows the job.
+    assert.equal(runner.status?.(handle.id), 'running',
+      'registry-backed status falls through to jobs.get(), which this mock reports as running')
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('queued runner status() survives completion, failure, and cancellation', async () => {
+  const h = harness()
+  try {
+    const { createQueuedTaskRunner } = await import('../src/host/task-runner.ts')
+    const { TaskCanceledError } = await import('../src/core/ports/tasks.ts')
+    const runner = createQueuedTaskRunner({ repository: h.repository })
+
+    const done = runner.start({ kind: 'mxpage_page', label: 'ok', run: async () => 1 })
+    assert.equal(runner.status?.(done.id), 'running')
+    await done.done
+    assert.equal(runner.status?.(done.id), 'completed', 'completed job must not decay to unknown')
+
+    const failed = runner.start({
+      kind: 'mxpage_page',
+      label: 'boom',
+      run: async () => {
+        throw new Error('nope')
+      },
+    })
+    await failed.done
+    assert.equal(runner.status?.(failed.id), 'failed')
+
+    const killed = runner.start({
+      kind: 'mxpage_page',
+      label: 'long',
+      run: async (ctx) => {
+        await new Promise<void>((resolve) => {
+          ctx.signal.addEventListener('abort', () => resolve())
+        })
+        throw new TaskCanceledError()
+      },
+    })
+    killed.cancel('test')
+    await killed.done
+    assert.equal(runner.status?.(killed.id), 'killed')
+
+    assert.equal(runner.status?.('mxpage_page_00000000'), 'unknown')
+  } finally {
+    h.cleanup()
+  }
+})

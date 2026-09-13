@@ -32,6 +32,7 @@ function createMockContext() {
   const routes: Array<{ kind?: string; path?: string; handler?: unknown }> = []
   const injected: string[][] = []
   let effectRan = false
+  let settingsHooks: { setSource: (source: () => unknown) => void; onChange: () => void } | undefined
 
   const ctx = {
     inject(names: string[], callback: (ctx: unknown) => void) {
@@ -66,12 +67,43 @@ function createMockContext() {
         return () => {}
       },
     },
+    // Mirrors the real `SettingsProvider.installSection`: fires `setSource`
+    // then `onChange` once synchronously at registration. `settingsHooks`
+    // captures the pair so a test can simulate a later settings-panel edit
+    // by calling `simulateSettingsUpdate` below.
+    settings: {
+      installSection(
+        _owner: unknown,
+        _ns: string,
+        _schema: unknown,
+        entry: unknown,
+        hooks: { setSource: (source: () => unknown) => void; onChange: () => void },
+      ) {
+        settingsHooks = hooks
+        hooks.setSource(() => entry)
+        hooks.onChange()
+      },
+    },
     get(name: string) {
-      return name === 'webServer' ? ctx.webServer : undefined
+      if (name === 'webServer') return ctx.webServer
+      if (name === 'settings') return ctx.settings
+      return undefined
     },
   }
 
-  return { ctx, registered, routes, injected, effectRan: () => effectRan }
+  return {
+    ctx,
+    registered,
+    routes,
+    injected,
+    effectRan: () => effectRan,
+    /** Simulates a settings-panel edit by re-invoking the captured hooks. */
+    simulateSettingsUpdate(nextConfig: unknown) {
+      if (!settingsHooks) throw new Error('settings.installSection was never called')
+      settingsHooks.setSource(() => nextConfig)
+      settingsHooks.onChange()
+    },
+  }
 }
 
 test('built bundle applies and registers the full mxpage_* surface', async (t) => {
@@ -111,9 +143,9 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
     })
 
     assert.ok(mock.effectRan(), 'apply must register through ctx.effect')
-    // Both surfaces are acquired through child fibers, so the plugin itself
-    // never blocks on a service the profile may not provide.
-    assert.deepEqual(mock.injected, [['tools', 'attachments'], ['webServer']])
+    // All three surfaces are acquired through child fibers, so the plugin
+    // itself never blocks on a service the profile may not provide.
+    assert.deepEqual(mock.injected, [['tools', 'attachments'], ['settings'], ['webServer']])
 
     const names = mock.registered.map((tool) => tool.name).sort()
     assert.deepEqual(names, [
@@ -170,6 +202,73 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
       assert.equal(route.kind, 'exact', `${route.path} must be an exact route`)
       assert.equal(typeof route.handler, 'function', `${route.path} must have a handler`)
     }
+
+    // -----------------------------------------------------------------
+    // INCIDENT REGRESSION: every route's handler used to accept a THIRD
+    // `method` parameter that the real host never supplies (the real
+    // `WebRoute.handler` signature is `(req, res) => void | Promise<void>`
+    // with no third argument). Because the method check compared the
+    // incoming request's method against that always-undefined parameter,
+    // EVERY route answered "method not allowed" for every request — caught
+    // live in a real DSH host, not by any prior test, because this suite
+    // only ever checked `typeof handler === 'function'` and never actually
+    // invoked one.
+    //
+    // This block invokes each handler the way the real host does — two
+    // arguments, no third — and asserts a route actually answers instead of
+    // rejecting its own expected method.
+    // -----------------------------------------------------------------
+    const getPaths = new Set([
+      '/api/dsh-mxpage/project',
+      '/api/dsh-mxpage/job',
+      '/api/dsh-mxpage/versions',
+      '/api/dsh-mxpage/image',
+    ])
+    for (const route of mock.routes) {
+      if (!route.path) continue
+      const method = getPaths.has(route.path) ? 'GET' : 'POST'
+      const chunks: Buffer[] = []
+      const fakeReq = {
+        method,
+        url: `${route.path}?id=x&sectionId=x`,
+        socket: { remoteAddress: '127.0.0.1' },
+        async *[Symbol.asyncIterator]() {
+          yield* chunks
+        },
+      }
+      let statusCode = 0
+      let body = ''
+      const fakeRes = {
+        writeHead(status: number) {
+          statusCode = status
+        },
+        end(payload?: string) {
+          body = payload ?? ''
+        },
+      }
+      // Exactly the real host's call shape: two arguments, no `method`.
+      await (route.handler as (req: unknown, res: unknown) => Promise<void>)(fakeReq, fakeRes)
+
+      assert.notEqual(
+        statusCode,
+        405,
+        `${route.path} rejected its own expected method (${method}) — the envelope/method wiring regressed`,
+      )
+      let parsed: { ok?: boolean; error?: string } = {}
+      try {
+        parsed = JSON.parse(body)
+      } catch {
+        // the /image route serves raw bytes, not JSON — that's fine, it only
+        // needs to not be a 405
+      }
+      if (parsed.error) {
+        assert.notEqual(
+          parsed.error,
+          'method-not-allowed',
+          `${route.path} answered method-not-allowed for its own expected method (${method})`,
+        )
+      }
+    }
   } finally {
     rmSync(store, { recursive: true, force: true })
   }
@@ -217,6 +316,124 @@ test('an unconfigured channel surfaces an actionable error, not a crash', async 
     assert.equal(result.ok, false)
     assert.equal(result.error, 'MXPAGE_HTTP_401')
     assert.match(String(result.message), /渠道/, 'the error must tell the user what to configure')
+  } finally {
+    rmSync(store, { recursive: true, force: true })
+  }
+})
+
+test('editing the settings-panel section takes effect without a plugin reload', async (t) => {
+  if (!existsSync(bundlePath)) {
+    t.skip('lib/index.js missing — run `npm run build`')
+    return
+  }
+  const mod = await import(pathToFileURL(bundlePath).href)
+  const store = mkdtempSync(join(tmpdir(), 'mxpage-smoke3-'))
+  try {
+    const mock = createMockContext()
+    mod.apply(mock.ctx as never, {
+      channels: [],
+      workspaceDir: store,
+      defaultLanguage: 'zh-CN',
+      defaultHeroCount: 3,
+      defaultDetailCount: 6,
+      defaultDetailAspectRatio: '3:4',
+      defaultPlatform: 'general_ecommerce',
+      defaultStyle: 'generic_clean',
+      analyzeTimeoutMs: 180_000,
+      promptTimeoutMs: 60_000,
+      imageTimeoutMs: 120_000,
+      maxReferenceImages: 4,
+      maxAnalysisImages: 10,
+      maxParallelSections: 2,
+      maxParallelProjects: 1,
+      rotateChannelOnQuotaExhausted: true,
+      allowSvgFallback: false,
+    })
+
+    // Before any settings edit: no channel configured, mxpage_channels fails.
+    const before = mock.registered.find((tool) => tool.name === 'mxpage_channels')
+    const beforeResult = await (
+      before?.execute as (args: unknown, exec: { signal: AbortSignal }) => Promise<Record<string, unknown>>
+    )({}, { signal: new AbortController().signal })
+    assert.equal(beforeResult.ok, false)
+
+    // Simulate the user filling in 设置 → 插件 → MxPage with a real channel —
+    // exactly what `installSection`'s `onChange` fires for on a live edit.
+    mock.simulateSettingsUpdate({
+      channels: [
+        {
+          id: 'test-channel',
+          label: 'Test channel',
+          baseUrl: 'http://127.0.0.1:1/v1',
+          apiKey: 'sk-test',
+          models: ['grok-imagine-image-2.0'],
+        },
+      ],
+      workspaceDir: store,
+      defaultLanguage: 'zh-CN',
+      defaultHeroCount: 3,
+      defaultDetailCount: 6,
+      defaultDetailAspectRatio: '3:4',
+      defaultPlatform: 'general_ecommerce',
+      defaultStyle: 'generic_clean',
+      analyzeTimeoutMs: 180_000,
+      promptTimeoutMs: 60_000,
+      imageTimeoutMs: 120_000,
+      maxReferenceImages: 4,
+      maxAnalysisImages: 10,
+      maxParallelSections: 2,
+      maxParallelProjects: 1,
+      rotateChannelOnQuotaExhausted: true,
+      allowSvgFallback: false,
+    })
+
+    // Tools were re-registered — a fresh `mxpage_channels` closure must now
+    // see the new channel without the plugin having been reloaded.
+    const after = mock.registered.filter((tool) => tool.name === 'mxpage_channels').pop()
+    assert.ok(after, 'mxpage_channels must still be registered after the edit')
+    const afterResult = await (
+      after?.execute as (args: unknown, exec: { signal: AbortSignal }) => Promise<Record<string, unknown>>
+    )({}, { signal: new AbortController().signal })
+
+    assert.equal(afterResult.ok, true, `expected the new channel to resolve, got ${JSON.stringify(afterResult)}`)
+    assert.equal((afterResult.channel as { id?: string })?.id, 'test-channel')
+
+    // Panel routes must also see the live runtime. A prior version captured
+    // `runtime.host` at registration, so the /channels handler kept talking
+    // to the empty ProviderResolver after the settings edit.
+    const channelsRoute = mock.routes.find((route) => route.path === '/api/dsh-mxpage/channels')
+    assert.ok(channelsRoute?.handler, 'the panel /channels route must exist')
+    let statusCode = 0
+    let body = ''
+    await (
+      channelsRoute.handler as (req: unknown, res: unknown) => Promise<void>
+    )(
+      {
+        method: 'POST',
+        url: '/api/dsh-mxpage/channels',
+        socket: { remoteAddress: '127.0.0.1' },
+        async *[Symbol.asyncIterator]() {
+          yield Buffer.from('{}')
+        },
+      },
+      {
+        writeHead(status: number) {
+          statusCode = status
+        },
+        end(payload?: string) {
+          body = payload ?? ''
+        },
+      },
+    )
+    assert.equal(statusCode, 200)
+    const parsed = JSON.parse(body) as {
+      ok?: boolean
+      channel?: { id?: string }
+      channels?: Array<{ id?: string }>
+    }
+    assert.equal(parsed.ok, true, `panel /channels must succeed after the edit, got ${body}`)
+    assert.equal(parsed.channel?.id, 'test-channel')
+    assert.ok(parsed.channels?.some((channel) => channel.id === 'test-channel'))
   } finally {
     rmSync(store, { recursive: true, force: true })
   }

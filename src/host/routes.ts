@@ -87,11 +87,24 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-/** Wraps a handler so a thrown error becomes a code envelope instead of a 500. */
+/**
+ * Wraps a handler so a thrown error becomes a code envelope instead of a 500.
+ *
+ * `method` is bound at REGISTRATION time (a closure over the expected verb),
+ * not read from the runtime call — the real `WebRoute.handler` signature is
+ * `(req, res) => void | Promise<void>` with no third parameter. A prior
+ * version accepted `method` as the handler's third argument, which the host
+ * never supplies (it is always `undefined`), so `guard()`'s `req.method !==
+ * method` check was permanently true and EVERY route always answered
+ * `method not allowed`. Caught by a live GUI run, not by the type checker,
+ * because `WebRoute[]` is only asserted with `as WebRoute[]` at the end of
+ * this file rather than satisfied structurally.
+ */
 function envelope(
+  method: 'GET' | 'POST',
   handler: (body: Record<string, unknown>, req: IncomingMessage) => Promise<Record<string, unknown>>,
 ) {
-  return async (req: IncomingMessage, res: ServerResponse, method: string): Promise<void> => {
+  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (!guard(req, res, method)) return
     try {
       const body = method === 'GET' ? {} : await readJsonBody(req)
@@ -128,12 +141,18 @@ export interface RouteDeps {
 }
 
 export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
+  // Do NOT destructure `runtime.host` / `runtime.analysis` / … here.
+  // `src/index.ts` wraps `runtime` and `config` in Proxies so a settings-panel
+  // edit can swap the live runtime without re-registering routes. Property
+  // access must happen inside each handler (i.e. on every request), not once
+  // at registration — a prior version captured the inner fields here and the
+  // panel kept talking to a stale ProviderResolver after the user saved a
+  // channel.
   const { runtime, config, imageUrl } = deps
-  const { host, analysis, planner, generation, exportService, xiaohongshu, assets } = runtime
 
   /** Panel-facing projection: storage paths become browser URLs. */
   async function projectView(projectId: string) {
-    const detail = await host.repository.project.getDetail(projectId)
+    const detail = await runtime.host.repository.project.getDetail(projectId)
     if (!detail) throw new Error(`project not found: ${projectId}`)
     const main = detail.assets.find((asset) => asset.isMain) ?? detail.assets[0] ?? null
     return {
@@ -194,11 +213,11 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.projects,
-      handler: envelope(async () => {
-        const list = await host.repository.project.list({ limit: 200 })
+       handler: envelope('POST', async () => {
+        const list = await runtime.host.repository.project.list({ limit: 200 })
         const views = await Promise.all(
           list.map(async (project) => {
-            const main = (await host.repository.asset.list({ projectId: project.id })).find(
+            const main = (await runtime.host.repository.asset.list({ projectId: project.id })).find(
               (asset) => asset.isMain,
             )
             return {
@@ -218,13 +237,13 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.projectCreate,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const name = asString(body.name) ?? 'untitled'
         const files = Array.isArray(body.files) ? (body.files as Array<Record<string, unknown>>) : []
         if (files.length < 1 || files.length > 10) {
           throw new Error('supply 1–10 product photos')
         }
-        const project = await host.repository.project.create({
+        const project = await runtime.host.repository.project.create({
           name,
           platform: asString(body.platform) ?? config.defaultPlatform,
           style: asString(body.style) ?? config.defaultStyle,
@@ -234,7 +253,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
           const fileName = asString(file.fileName)
           const base64Data = asString(file.base64Data)
           if (!fileName || !base64Data) throw new Error('each file needs fileName and base64Data')
-          await assets.saveUploadAsset({
+          await runtime.assets.saveUploadAsset({
             projectId: project.id,
             type: index === 0 ? 'MAIN' : 'REFERENCE',
             fileName,
@@ -245,7 +264,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
           })
           index += 1
         }
-        await host.repository.project.mergeModelSnapshot(project.id, {
+        await runtime.host.repository.project.mergeModelSnapshot(project.id, {
           previewConfig: {
             heroImageCount: config.defaultHeroCount,
             detailSectionCount: config.defaultDetailCount,
@@ -259,7 +278,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.project,
-      handler: envelope(async (_body, req) => {
+       handler: envelope('GET', async (_body, req) => {
         const id = query(req).get('id')
         if (!id) throw new Error('id is required')
         return projectView(id)
@@ -268,7 +287,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.upload,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         const fileName = asString(body.fileName)
         const base64Data = asString(body.base64Data)
@@ -276,10 +295,10 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
           throw new Error('projectId, fileName and base64Data are required')
         }
         const role = (asString(body.role) ?? 'reference').toUpperCase()
-        const count = await host.repository.asset.count(projectId)
+        const count = await runtime.host.repository.asset.count(projectId)
         if (count >= 10) throw new Error('max 10 assets per project')
         const bytes = Buffer.from(base64Data.replace(/^data:[^;]+;base64,/, ''), 'base64')
-        const asset = await assets.saveUploadAsset({
+        const asset = await runtime.assets.saveUploadAsset({
           projectId,
           type: role as 'MAIN' | 'ANGLE' | 'DETAIL' | 'REFERENCE',
           fileName,
@@ -288,7 +307,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
           sortOrder: count,
           isMain: role === 'MAIN',
         })
-        if (role === 'MAIN') await host.repository.asset.setMain(projectId, asset.id)
+        if (role === 'MAIN') await runtime.host.repository.asset.setMain(projectId, asset.id)
         return { assetId: asset.id, url: imageUrl(asset.filePath) }
       }),
     },
@@ -297,21 +316,21 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.analyze,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         if (!projectId) throw new Error('projectId is required')
-        const result = await analysis.analyzeProject(projectId, asString(body.model) ?? null)
+        const result = await runtime.analysis.analyzeProject(projectId, asString(body.model) ?? null)
         return { analysis: result.normalizedResult }
       }),
     },
     {
       kind: 'exact',
       path: ROUTES.plan,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         if (!projectId) throw new Error('projectId is required')
         const previewConfig = (body.previewConfig ?? {}) as Record<string, unknown>
-        const result = await planner.planSections(projectId, {
+        const result = await runtime.planner.planSections(projectId, {
           modelId: asString(body.model) ?? null,
           previewConfig: {
             heroImageCount:
@@ -335,10 +354,10 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.styleGuide,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         if (!projectId) throw new Error('projectId is required')
-        const result = await planner.regenerateVisualStyleGuide(
+        const result = await runtime.planner.regenerateVisualStyleGuide(
           projectId,
           asString(body.model) ?? null,
         )
@@ -350,21 +369,21 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.section,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const sectionId = asString(body.sectionId)
         if (!sectionId) throw new Error('sectionId is required')
         const patch = (body.patch ?? {}) as Record<string, unknown>
-        const section = await planner.updateSection(sectionId, patch)
+        const section = await runtime.planner.updateSection(sectionId, patch)
         return { section }
       }),
     },
     {
       kind: 'exact',
       path: ROUTES.sectionCreate,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         if (!projectId) throw new Error('projectId is required')
-        const section = await planner.createSection(projectId, {
+        const section = await runtime.planner.createSection(projectId, {
           type: asString(body.type) ?? 'custom',
           title: asString(body.title) ?? '自定义模块',
           goal: asString(body.goal) ?? '',
@@ -377,23 +396,23 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.sectionDelete,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const sectionId = asString(body.sectionId)
         if (!sectionId) throw new Error('sectionId is required')
-        await planner.deleteSection(sectionId)
+        await runtime.planner.deleteSection(sectionId)
         return {}
       }),
     },
     {
       kind: 'exact',
       path: ROUTES.reorder,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         const ordered = body.orderedSectionIds
         if (!projectId || !Array.isArray(ordered)) {
           throw new Error('projectId and orderedSectionIds are required')
         }
-        await planner.reorderSections(projectId, ordered as string[])
+        await runtime.planner.reorderSections(projectId, ordered as string[])
         return {}
       }),
     },
@@ -402,12 +421,12 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.generate,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         const sectionId = asString(body.sectionId)
         if (!projectId || !sectionId) throw new Error('projectId and sectionId are required')
         const invoke =
-          body.regenerate === true ? generation.regenerateSectionImage : generation.generateSectionImage
+          body.regenerate === true ? runtime.generation.regenerateSectionImage : runtime.generation.generateSectionImage
         const result = await invoke(projectId, sectionId, asString(body.model) ?? null)
         return {
           versionId: result.version.id,
@@ -421,7 +440,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.edit,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         const sectionId = asString(body.sectionId)
         const editMode = asString(body.editMode) as 'repaint' | 'enhance' | 'translate' | undefined
@@ -431,7 +450,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
         if (editMode === 'translate' && !asString(body.targetLanguage)) {
           throw new Error('targetLanguage is required for mode=translate')
         }
-        const result = await generation.editSectionImage(projectId, sectionId, {
+        const result = await runtime.generation.editSectionImage(projectId, sectionId, {
           preferredModelId: asString(body.model) ?? null,
           editMode,
           targetLanguage: asString(body.targetLanguage) as never,
@@ -447,11 +466,11 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.generatePage,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         if (!projectId) throw new Error('projectId is required')
         const mode = asString(body.mode) ?? 'missing'
-        const sections = await host.repository.section.list(projectId)
+        const sections = await runtime.host.repository.section.list(projectId)
         const sectionIds = sections
           .filter((section) => (mode === 'all' ? true : !section.currentImageAssetId))
           .sort((a, b) => a.order - b.order)
@@ -473,7 +492,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
                 totalItems: total,
                 heartbeatAt: new Date().toISOString(),
               })
-              await generation.generateSectionImage(projectId, sectionId)
+              await runtime.generation.generateSectionImage(projectId, sectionId)
               done += 1
             }
             return { projectId, completed: done, total }
@@ -485,12 +504,20 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.job,
-      handler: envelope(async (_body, req) => {
+       handler: envelope('GET', async (_body, req) => {
         const jobId = query(req).get('id')
         if (!jobId) throw new Error('id is required')
         const handle = runtime.runner.get?.(jobId)
         if (handle) return { state: handle.cancelled ? 'stopping' : 'running', progress: null }
-        const persisted = await host.repository.task.get(jobId)
+        // Settled jobs keep no live handle; ask the runner for its terminal
+        // state before falling back to the task row. Without this, completed
+        // page-generation jobs (whose ids exist only in the runner) polled as
+        // `unknown` and the panel reported "生成结束：未知".
+        const runnerState = runtime.runner.status?.(jobId)
+        if (runnerState && runnerState !== 'unknown') {
+          return { state: runnerState, progress: null, error: null }
+        }
+        const persisted = await runtime.host.repository.task.get(jobId)
         return {
           state: persisted?.status.toLowerCase() ?? 'unknown',
           progress: persisted?.outputPayload ?? null,
@@ -501,7 +528,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.jobCancel,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const jobId = asString(body.jobId)
         if (!jobId) throw new Error('jobId is required')
         const handle = runtime.runner.get?.(jobId)
@@ -518,10 +545,10 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.versions,
-      handler: envelope(async (_body, req) => {
+       handler: envelope('GET', async (_body, req) => {
         const sectionId = query(req).get('sectionId')
         if (!sectionId) throw new Error('sectionId is required')
-        const list = await generation.listSectionVersions(sectionId)
+        const list = await runtime.generation.listSectionVersions(sectionId)
         return {
           versions: list.map((version) => ({
             id: version.id,
@@ -536,11 +563,11 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.versionActivate,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const sectionId = asString(body.sectionId)
         const versionId = asString(body.versionId)
         if (!sectionId || !versionId) throw new Error('sectionId and versionId are required')
-        const version = await generation.activateSectionVersion(sectionId, versionId)
+        const version = await runtime.generation.activateSectionVersion(sectionId, versionId)
         return {
           versionId: version?.id ?? null,
           imageUrl: version?.imageAsset ? imageUrl(version.imageAsset.filePath) : null,
@@ -552,14 +579,14 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.export,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const projectId = asString(body.projectId)
         if (!projectId) throw new Error('projectId is required')
         if (asString(body.format) === 'json') {
-          const detail = await host.repository.project.getDetail(projectId)
+          const detail = await runtime.host.repository.project.getDetail(projectId)
           return { format: 'json', project: detail }
         }
-        const archive = await exportService.buildImageArchive(projectId)
+        const archive = await runtime.exportService.buildImageArchive(projectId)
         return {
           format: 'zip',
           fileName: archive.fileName,
@@ -583,7 +610,7 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
             writeJson(res, 400, { ok: false, code: 'bad-request', message: 'path is required' })
             return
           }
-          const bytes = await assets.readStorageFile(relPath)
+          const bytes = await runtime.assets.readStorageFile(relPath)
           const lower = relPath.toLowerCase()
           const contentType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
             ? 'image/jpeg'
@@ -608,8 +635,8 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.channels,
-      handler: envelope(async () => {
-        const resolved = await host.provider.resolve({ operation: 'panel-diagnostics' })
+       handler: envelope('POST', async () => {
+        const resolved = await runtime.host.provider.resolve({ operation: 'panel-diagnostics' })
         return {
           channel: { id: resolved.id, label: resolved.label, baseUrl: resolved.baseUrl },
           modelCount: resolved.models.length,
@@ -640,10 +667,10 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.xhsPlan,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const topic = asString(body.topic)
         if (!topic) throw new Error('topic is required')
-        const plan = await xiaohongshu.planXiaohongshuPost({
+        const plan = await runtime.xiaohongshu.planXiaohongshuPost({
           topic,
           imageCount: asNumber(body.imageCount) ?? 5,
           imageAspectRatio: (asString(body.aspectRatio) ?? '3:4') as '1:1' | '3:4' | '9:16',
@@ -654,10 +681,10 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.xhsGenerate,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const plan = body.plan as never
         if (!plan) throw new Error('plan is required')
-        const images = await xiaohongshu.generateXiaohongshuImages(plan, undefined, {
+        const images = await runtime.xiaohongshu.generateXiaohongshuImages(plan, undefined, {
           imageAspectRatio: asString(body.aspectRatio) as '1:1' | '3:4' | '9:16' | undefined,
         })
         return { pages: images }
@@ -666,11 +693,11 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
     {
       kind: 'exact',
       path: ROUTES.xhsEdit,
-      handler: envelope(async (body) => {
+       handler: envelope('POST', async (body) => {
         const imageUrlValue = asString(body.imageUrl)
         const prompt = asString(body.prompt)
         if (!imageUrlValue || !prompt) throw new Error('imageUrl and prompt are required')
-        const edited = await xiaohongshu.editXiaohongshuImage({
+        const edited = await runtime.xiaohongshu.editXiaohongshuImage({
           imageUrl: imageUrlValue,
           prompt,
           imageAspectRatio: asString(body.aspectRatio) as '1:1' | '3:4' | '9:16' | undefined,

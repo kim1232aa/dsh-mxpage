@@ -16,8 +16,8 @@
 import { randomUUID } from 'node:crypto'
 
 import type { Repository } from '../core/ports/repository.ts'
-import type { TaskHandle, TaskRunner, TaskSpec } from '../core/ports/tasks.ts'
-import { TaskCanceledError } from '../core/ports/tasks.ts'
+import type { TaskHandle, TaskRunner, TaskSpec, TaskState } from '../core/ports/tasks.ts'
+import { TaskCanceledError, isTaskCanceledError } from '../core/ports/tasks.ts'
 
 export type TaskOutcome = { ok: true; value: unknown } | { ok: false; error: Error }
 
@@ -40,6 +40,26 @@ export function createQueuedTaskRunner(options: QueuedTaskRunnerOptions): TaskRu
   const queue: Array<{ id: string; spec: TaskSpec<unknown> }> = []
   let running = 0
 
+  /**
+   * Terminal states of finished tasks, so `status(id)` keeps answering after
+   * the live handle is released. A live end-to-end run caught the gap: the
+   * `/job` route fell through to the repository (which has no row under the
+   * runner id) and reported `unknown` for every completed job. Bounded — only
+   * the most recent states are retained.
+   */
+  const settled = new Map<string, TaskState>()
+  const SETTLED_LIMIT = 200
+
+  function recordSettled(id: string, state: TaskState): void {
+    settled.delete(id)
+    settled.set(id, state)
+    while (settled.size > SETTLED_LIMIT) {
+      const oldest = settled.keys().next().value
+      if (oldest === undefined) break
+      settled.delete(oldest)
+    }
+  }
+
   async function execute(id: string, spec: TaskSpec<unknown>): Promise<void> {
     const entry = entries.get(id)
     if (!entry) return
@@ -52,12 +72,12 @@ export function createQueuedTaskRunner(options: QueuedTaskRunnerOptions): TaskRu
           },
         },
       })
+      recordSettled(id, entry.controller.signal.aborted ? 'killed' : 'completed')
       entry.resolve({ ok: true, value })
     } catch (error) {
-      entry.resolve({
-        ok: false,
-        error: error instanceof Error ? error : new Error(String(error)),
-      })
+      const normalized = error instanceof Error ? error : new Error(String(error))
+      recordSettled(id, isTaskCanceledError(normalized) ? 'killed' : 'failed')
+      entry.resolve({ ok: false, error: normalized })
     } finally {
       entries.delete(id)
       handles.delete(id)
@@ -102,6 +122,7 @@ export function createQueuedTaskRunner(options: QueuedTaskRunnerOptions): TaskRu
           resolveDone({ ok: false, error: new TaskCanceledError(reason) })
           entries.delete(id)
           handles.delete(id)
+          recordSettled(id, 'killed')
         },
         done,
       }
@@ -114,6 +135,12 @@ export function createQueuedTaskRunner(options: QueuedTaskRunnerOptions): TaskRu
 
     get(id: string) {
       return handles.get(id)
+    },
+
+    status(id: string): TaskState {
+      const live = handles.get(id)
+      if (live) return live.cancelled ? 'stopping' : 'running'
+      return settled.get(id) ?? 'unknown'
     },
   }
 }

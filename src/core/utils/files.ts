@@ -18,6 +18,15 @@ export function extFromMime(mimeType?: string | null) {
   return "bin";
 }
 
+/** Sniff the real image mime from magic bytes; null when unrecognized. */
+export function sniffImageMime(bytes: Uint8Array): string | null {
+  if (bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes.length > 12 && bytes[0] === 0x52 && bytes[8] === 0x57) return "image/webp"; // RIFF....WEBP
+  if (bytes.length > 4 && bytes[0] === 0x47 && bytes[1] === 0x49) return "image/gif"; // GIF
+  return null;
+}
+
 export function relativeStorageUrl(filePath: string) {
   const normalized = filePath.split(path.sep).join("/");
   return `/api/files/${normalized}`;

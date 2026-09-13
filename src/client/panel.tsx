@@ -1,28 +1,51 @@
 /**
  * MxPage panel — the workbench shell.
  *
- * Four screens, matching the objective: 规划 (planner), 编辑 (editor),
- * 小红书 (the four-step flow), 渠道 (channel diagnostics), plus the project
- * rail that all of them share.
+ * Rebuilt to match the actual upstream MxPage product layout: a left rail
+ * with brand header + nav items + attribution footer, and a main canvas that
+ * shows either the "upload to start" welcome state or the phone-preview
+ * workbench once a project exists.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
 import { MxpageApi, type ProjectDetailResponse, type ProjectSummary } from './api.ts'
 import { ChannelsView } from './views/channels.tsx'
 import { EditorView } from './views/editor.tsx'
 import { PlannerView } from './views/planner.tsx'
 import { XiaohongshuView } from './views/xiaohongshu.tsx'
-import { Badge, Button, Field, Notice, styles, T } from './ui.tsx'
+import { Badge, Button, Notice, styles, T } from './ui.tsx'
 
 type Tab = 'planner' | 'editor' | 'xiaohongshu' | 'channels'
 
-const TABS: Array<[Tab, string]> = [
-  ['planner', '规划'],
-  ['editor', '编辑'],
-  ['xiaohongshu', '小红书'],
-  ['channels', '渠道'],
+const NAV: Array<[Tab, string, string]> = [
+  ['planner', '规划', '📐'],
+  ['editor', '编辑', '✏️'],
+  ['xiaohongshu', '小红书图文', '📕'],
+  ['channels', 'AI 配置', '🔌'],
 ]
+
+function LogoMark() {
+  return (
+    <span
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: 9,
+        background: T.dark,
+        color: '#fff',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 13,
+        fontWeight: 800,
+        flex: '0 0 auto',
+      }}
+    >
+      M
+    </span>
+  )
+}
 
 export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
   const { api, onClose } = props
@@ -34,10 +57,7 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
   const [sectionId, setSectionId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newFiles, setNewFiles] = useState<File[]>([])
-  const [railError, setRailError] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement | null>(null)
 
   const reloadProjects = useCallback(async () => {
@@ -46,7 +66,7 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
       setProjects(result.projects)
       return result.projects
     } catch (cause) {
-      setRailError(cause instanceof Error ? cause.message : String(cause))
+      setError(cause instanceof Error ? cause.message : String(cause))
       return []
     }
   }, [api])
@@ -66,14 +86,12 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
   )
 
   useEffect(() => {
-    void (async () => {
-      const list = await reloadProjects()
-      if (list.length > 0) setProjectId((current) => current ?? list[0]!.id)
-    })()
+    void reloadProjects()
   }, [reloadProjects])
 
   useEffect(() => {
     if (projectId) void reloadDetail(projectId)
+    else setDetail(null)
   }, [projectId, reloadDetail])
 
   /** Serializes one async action behind the shared `busy` label. */
@@ -89,84 +107,41 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
     }
   }, [])
 
-  const createProject = () =>
+  const createProject = (files: File[]) =>
     run('create', async () => {
-      const files = newFiles
       if (files.length === 0) throw new Error('至少选择一张商品图')
       const first = files[0]!
-      // Create the project through the tool-facing surface is not available in
-      // the browser, so the panel uploads into a project created via /upload's
-      // sibling: we create by uploading to a fresh project through the API.
-      const created = await api.createProjectWithUpload(
-        newName.trim() || first.name.replace(/\.[^.]+$/, ''),
-        files,
-      )
-      setCreating(false)
-      setNewName('')
-      setNewFiles([])
+      const created = await api.createProjectWithUpload(first.name.replace(/\.[^.]+$/, ''), files)
       await reloadProjects()
       setProjectId(created.projectId)
     })
 
-  const tabsDisabled = !detail && tab !== 'channels'
-
   return (
     <div style={styles.root}>
-      <div style={styles.header}>
-        <strong style={{ fontSize: 14 }}>MxPage</strong>
-        <span style={{ color: T.muted, fontSize: 12 }}>
-          电商图文工作台 · analyze → plan → VPA → generate
-        </span>
-        <div style={{ marginLeft: 'auto', ...styles.row }}>
-          <Button variant="ghost" onClick={onClose} title="关闭面板">
-            关闭
-          </Button>
-        </div>
-      </div>
-
       <div style={styles.body}>
+        {/* -------------------------------------------------- left rail -- */}
         <div style={styles.rail}>
-          <div style={{ ...styles.row, justifyContent: 'space-between', padding: '0 4px' }}>
-            <span style={{ color: T.muted, fontSize: 12 }}>项目 ({projects.length})</span>
-            <Button variant="ghost" onClick={() => setCreating((value) => !value)}>
-              {creating ? '取消' : '+ 新建'}
-            </Button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 6px 14px' }}>
+            <LogoMark />
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, lineHeight: 1.2 }}>MxPage</div>
+              <div style={{ fontSize: 10.5, color: T.muted }}>AI 商品图文工作台</div>
+            </div>
           </div>
 
-          {creating ? (
-            <div style={{ ...styles.card, padding: 8 }}>
-              <Field label="项目名">
-                <input
-                  value={newName}
-                  onChange={(event) => setNewName(event.target.value)}
-                  style={styles.input}
-                  placeholder="例如：保温杯详情页"
-                />
-              </Field>
-              <Field label="商品图" hint={newFiles.length ? `已选 ${newFiles.length} 张` : '第一张自动成为主图'}>
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={(event) => setNewFiles(Array.from(event.target.files ?? []))}
-                  style={{ ...styles.input, padding: 4 }}
-                />
-              </Field>
-              <Button
-                variant="primary"
-                disabled={busy !== null || newFiles.length === 0}
-                onClick={createProject}
-                style={{ width: '100%' }}
-              >
-                {busy === 'create' ? '创建中…' : '创建项目'}
+          <div style={{ display: 'grid', gap: 2, marginBottom: 10 }}>
+            {NAV.map(([value, label, icon]) => (
+              <Button key={value} variant="nav" active={tab === value} onClick={() => setTab(value)}>
+                <span style={{ fontSize: 14 }}>{icon}</span>
+                {label}
               </Button>
-            </div>
-          ) : null}
+            ))}
+          </div>
 
-          {railError ? <Notice kind="error">{railError}</Notice> : null}
-
-          <div style={{ display: 'grid', gap: 4 }}>
+          <div style={{ fontSize: 11, color: T.muted, fontWeight: 700, padding: '10px 10px 6px' }}>
+            项目（{projects.length}）
+          </div>
+          <div style={{ display: 'grid', gap: 2, overflowY: 'auto', flex: '1 1 auto', minHeight: 60 }}>
             {projects.map((project) => (
               <button
                 key={project.id}
@@ -181,9 +156,9 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
                   alignItems: 'center',
                   textAlign: 'left',
                   background: project.id === projectId ? T.accentSoft : 'transparent',
-                  border: `1px solid ${project.id === projectId ? T.accent : 'transparent'}`,
-                  borderRadius: 6,
-                  padding: 6,
+                  border: 'none',
+                  borderRadius: 8,
+                  padding: '6px 8px',
                   color: T.text,
                   font: 'inherit',
                   cursor: 'pointer',
@@ -191,12 +166,12 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
               >
                 <span
                   style={{
-                    width: 34,
-                    height: 34,
+                    width: 26,
+                    height: 26,
                     flex: '0 0 auto',
-                    borderRadius: 4,
+                    borderRadius: 6,
                     border: `1px solid ${T.border}`,
-                    background: T.bg,
+                    background: T.cardMuted,
                     overflow: 'hidden',
                   }}
                 >
@@ -208,61 +183,42 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
                     />
                   ) : null}
                 </span>
-                <span style={{ minWidth: 0, flex: '1 1 auto' }}>
-                  <span
-                    style={{
-                      display: 'block',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {project.name}
-                  </span>
-                  <Badge>{project.status}</Badge>
+                <span
+                  style={{
+                    minWidth: 0,
+                    flex: '1 1 auto',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontSize: 12.5,
+                  }}
+                >
+                  {project.name}
                 </span>
               </button>
             ))}
-            {projects.length === 0 && !creating ? (
-              <div style={{ color: T.muted, fontSize: 12, padding: 8 }}>
-                还没有项目。点「+ 新建」上传商品图开始。
-              </div>
-            ) : null}
+          </div>
+
+          <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 10, paddingTop: 12 }}>
+            <div style={{ fontSize: 10.5, color: T.muted }}>出品方</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, margin: '2px 0 6px' }}>灵矩绘境 · MxPage</div>
+            <Button variant="ghost" onClick={onClose} style={{ padding: '6px 0', color: T.muted }}>
+              关闭面板
+            </Button>
           </div>
         </div>
 
+        {/* --------------------------------------------------- main area -- */}
         <div style={styles.main}>
-          <div style={{ ...styles.row, marginBottom: 14 }}>
-            {TABS.map(([value, label]) => (
-              <Button
-                key={value}
-                variant="ghost"
-                active={tab === value}
-                onClick={() => setTab(value)}
-              >
-                {label}
-              </Button>
-            ))}
-            {detail ? (
-              <span style={{ marginLeft: 'auto', ...styles.row, gap: 6 }}>
-                <Badge>{detail.project.status}</Badge>
-                <span style={{ color: T.muted, fontSize: 12 }}>
-                  {detail.project.name} · {detail.assets.length} 张图 ·{' '}
-                  {detail.sections.length} 个分区
-                </span>
-              </span>
-            ) : null}
-          </div>
-
           {error ? <Notice kind="error">{error}</Notice> : null}
 
-          {tab === 'channels' ? <ChannelsView api={api} /> : null}
-
-          {tab !== 'channels' && tabsDisabled ? (
-            <div style={{ color: T.muted }}>先创建或选择一个项目。</div>
-          ) : null}
-
-          {detail && tab === 'planner' ? (
+          {tab === 'channels' ? (
+            <ChannelsView api={api} />
+          ) : tab === 'xiaohongshu' ? (
+            <XiaohongshuView api={api} busy={busy} run={run} />
+          ) : !detail ? (
+            <WelcomeUpload busy={busy} dragOver={dragOver} setDragOver={setDragOver} fileInput={fileInput} onFiles={createProject} />
+          ) : tab === 'planner' ? (
             <PlannerView
               api={api}
               detail={detail}
@@ -274,9 +230,7 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
                 setTab('editor')
               }}
             />
-          ) : null}
-
-          {detail && tab === 'editor' ? (
+          ) : (
             <EditorView
               api={api}
               detail={detail}
@@ -286,11 +240,120 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
               selectedSectionId={sectionId}
               onSelectSection={setSectionId}
             />
-          ) : null}
-
-          {tab === 'xiaohongshu' ? <XiaohongshuView api={api} busy={busy} run={run} /> : null}
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/** The upstream "上传产品图片" welcome / drop-zone state. */
+function WelcomeUpload(props: {
+  busy: string | null
+  dragOver: boolean
+  setDragOver: (value: boolean) => void
+  fileInput: RefObject<HTMLInputElement | null>
+  onFiles: (files: File[]) => void
+}) {
+  const { busy, dragOver, setDragOver, fileInput, onFiles } = props
+  const [staged, setStaged] = useState<File[]>([])
+
+  return (
+    <div
+      style={{
+        flex: '1 1 auto',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
+        padding: 40,
+      }}
+    >
+      <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.01em' }}>上传产品图片</div>
+      <div style={{ color: T.muted, fontSize: 13.5, marginTop: 8, marginBottom: 28 }}>
+        上传一张产品白底图，AI 将自动分析产品信息
+      </div>
+
+      <div
+        onDragOver={(event) => {
+          event.preventDefault()
+          setDragOver(true)
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(event) => {
+          event.preventDefault()
+          setDragOver(false)
+          const files = Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith('image/'))
+          if (files.length) setStaged(files)
+        }}
+        onClick={() => fileInput.current?.click()}
+        style={{
+          width: 'min(560px, 90%)',
+          minHeight: 260,
+          background: T.card,
+          border: `1.5px dashed ${dragOver ? T.accent : T.borderStrong}`,
+          borderRadius: 18,
+          boxShadow: T.shadow,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 14,
+          cursor: 'pointer',
+          padding: 24,
+        }}
+      >
+        <input
+          ref={fileInput as React.RefObject<HTMLInputElement>}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={(event) => setStaged(Array.from(event.target.files ?? []))}
+        />
+        {staged.length > 0 ? (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+            {staged.slice(0, 5).map((file, index) => (
+              <img
+                key={index}
+                src={URL.createObjectURL(file)}
+                alt=""
+                style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }}
+              />
+            ))}
+          </div>
+        ) : (
+          <>
+            <span
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: 999,
+                background: T.cardMuted,
+                border: `1px solid ${T.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 20,
+              }}
+            >
+              ⬆
+            </span>
+            <div style={{ fontWeight: 700, fontSize: 14.5 }}>点击上传产品图片</div>
+          </>
+        )}
+        <div style={{ color: T.muted, fontSize: 11.5 }}>支持 JPG、PNG、WEBP，建议使用清晰的白底主图</div>
+      </div>
+
+      <Button
+        variant="dark"
+        disabled={staged.length === 0 || busy !== null}
+        onClick={() => onFiles(staged)}
+        style={{ marginTop: 22, padding: '11px 32px', fontSize: 13.5 }}
+      >
+        {busy === 'create' ? '创建中…' : '⬆ 开始分析'}
+      </Button>
     </div>
   )
 }
