@@ -1,0 +1,6 @@
+# run 2026-09-13T16:20Z host-capabilities
+$ tsdown && wrap-client
+exit=0 lib/index.js=347kB lib/client.js=146336B
+$ node22 --experimental-strip-types --test test/**/*.test.ts
+exit=0 tests=51 pass=51 fail=0 skipped=0
+scope: +translate-page, project update/delete, asset reorder/set-main/delete, analysis-save, tasks+retry, provider test/discover, usage monitor, batch-create routes; +5 tools (translate_page/update_project/delete_project/set_main_asset/usage_stats)

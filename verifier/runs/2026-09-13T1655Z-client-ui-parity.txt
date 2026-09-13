@@ -1,0 +1,6 @@
+# run 2026-09-13T16:55Z client-ui-parity
+$ tsdown (index+client.raw+ui-test) && wrap-client
+exit=0 lib/index.js=347538B lib/client.js=211951B lib/ui-test.js=156849B
+$ node22 --experimental-strip-types --test test/**/*.test.ts
+exit=0 tests=64 pass=64 fail=0 skipped=0
+scope: +client views analysis/export/batch/monitor; channels test+discover; planner translate; panel 8 tabs; api.ts methods; v03-features.test.ts (12 tests); ui-views.test.ts SSR render

@@ -1,0 +1,5 @@
+# run 2026-09-13T15:58Z baseline
+$ node node_modules/tsdown/dist/run.mjs && node scripts/wrap-client.mjs
+exit=0 lib/index.js=308938B lib/client.js=145616B
+$ node22 --experimental-strip-types --test test/**/*.test.ts
+exit=0 tests=51 pass=51 fail=0 duration_ms=8277

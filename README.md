@@ -120,7 +120,7 @@ tokens are redacted (`src/util/redact.ts`).
 dsh plugin add link:/absolute/path/to/mxpage
 
 # or from the built tarball
-dsh plugin add ./dsh-mxpage-0.2.0.tgz
+dsh plugin add ./dsh-mxpage-0.3.0.tgz
 ```
 
 `dsh plugin add` registers the bundle in the profile's
@@ -152,7 +152,7 @@ under `$DSH_HOME/mxpage/projects/<projectId>/` and returned as attachments.
 
 ---
 
-## Panel — the four screens
+## Panel — the eight screens
 
 The plugin ships a browser half (`lib/client.js`) that mounts a workbench into
 the DSH centre column, with a sidebar toggle. This is the part upstream MxPage
@@ -160,10 +160,14 @@ actually lives in: a stateful workspace, not a prompt wrapper.
 
 | Screen | What it does |
 |---|---|
-| **规划** | Output config (hero/detail counts, aspect, in-image language), analyze → plan, the project-level visual style guide, the section list with per-section generation and a whole-page job |
+| **分析** | Project meta (name / platform / style, delete project), the product-asset grid (upload, reorder, set main image, delete), and the structured analysis editor with one-click analyze / save |
+| **规划** | Output config (hero/detail counts, aspect, in-image language), analyze → plan, the project-level visual style guide, the section list with per-section generation and a whole-page job, plus whole-page translation into a target language |
 | **编辑** | Per-section preview, inline editing of title/goal/copy/visualPrompt, generate / regenerate / repaint / enhance / translate, and the version list with activate |
+| **导出** | One-click ZIP / JSON export, export notes, the model snapshot, and a gallery of everything currently exportable |
 | **小红书** | The four-step carousel flow: plan → review each `imagePrompt` → generate → edit, with per-page download |
-| **渠道** | Channel diagnostics: the active channel, its model catalog, image/vision/text counts, per-channel key presence, and the quota-rotation note |
+| **批量 SKU** | Up to 20 product images per batch — one project per SKU, optional background analyze+plan with per-SKU failure isolation |
+| **监控** | The API usage ledger: totals, token counts, top models / projects, quota-state classification, per-entry delete / clear, plus task history with retry for failed tasks |
+| **渠道** | Channel diagnostics: the active channel, its model catalog, image/vision/text counts, per-channel key presence, connection test and model discovery with role recommendations, and the quota-rotation note |
 
 Re-planning is guarded behind an explicit confirmation, because it deletes every
 section, version and generated image in the project.
@@ -198,6 +202,11 @@ registered on the host `webServer` and fenced to loopback requests.
 | `mxpage_xiaohongshu_plan` | Xiaohongshu step 1 — has a fully local Chinese fallback plan |
 | `mxpage_xiaohongshu_generate` | Step 3 — one image per page, VPA-gated |
 | `mxpage_xiaohongshu_edit` | Step 4 — edit one page in place |
+| `mxpage_translate_page` | Whole-page translation as a background job — one `translate` edit per generated section |
+| `mxpage_update_project` | Rename a project or change its platform / style |
+| `mxpage_delete_project` | Delete a project and its workspace; requires `confirm: true` |
+| `mxpage_set_main_asset` | Swap the primary reference image by asset id or image path |
+| `mxpage_usage_stats` | Usage-ledger summary: calls, tokens, quota events, top models / projects, recent errors |
 | `mxpage_channels` | Channel diagnostics |
 
 ---
@@ -261,7 +270,7 @@ Tests worth knowing about:
   (terminal-state stickiness, system-project hiding, stale recovery), storage
   path containment, task cancellation
 - `test/smoke.test.ts` — loads the **built** `lib/index.js`, runs the real
-  `apply()` against a mock Cordis context, and asserts all 15 tools register
+  `apply()` against a mock Cordis context, and asserts all 20 tools register
 
 ---
 

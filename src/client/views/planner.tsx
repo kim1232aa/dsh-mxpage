@@ -57,6 +57,7 @@ export function PlannerView(props: {
   const [showConfig, setShowConfig] = useState(false)
   const [showStyleGuide, setShowStyleGuide] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [translateLang, setTranslateLang] = useState('en-US')
 
   const analyzed = Boolean(detail.analysis)
   const hasSections = detail.sections.length > 0
@@ -94,6 +95,30 @@ export function PlannerView(props: {
         const status = await api.jobStatus(jobId).catch(() => null)
         if (!status || (status.state !== 'running' && status.state !== 'stopping')) {
           setNotice(`生成结束：${status?.state === 'completed' ? '已完成' : (status?.state ?? '未知')}`)
+          break
+        }
+      }
+      await reload()
+    })
+
+  /** Upstream translate-page: translate-edit every section that has an image. */
+  const doTranslate = () =>
+    run('translate', async () => {
+      const { jobId, total } = await api.translatePage(detail.project.id, translateLang)
+      setNotice(`整页翻译已启动，共 ${total} 个分区 → ${translateLang}。`)
+      for (let i = 0; i < 600; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        const status = await api.jobStatus(jobId).catch(() => null)
+        if (!status || (status.state !== 'running' && status.state !== 'stopping')) {
+          const progress = (status?.progress ?? {}) as Record<string, unknown>
+          const failed = Number(progress.failed ?? 0)
+          setNotice(
+            status?.state === 'completed'
+              ? failed
+                ? `翻译完成：${total - failed} 成功，${failed} 失败（可逐个重试）`
+                : '翻译完成：全部分区已转换'
+              : `翻译结束：${status?.state ?? '未知'}`,
+          )
           break
         }
       }
@@ -163,8 +188,27 @@ export function PlannerView(props: {
             title={`${detail.project.name} 的商品页工作台`}
             description="左侧查看模块顺序与生成状态，中间查看手机商品页预览，右侧编辑标题、文案和视觉 Prompt。"
           />
-          <div style={{ display: 'flex', gap: 8, flex: '0 0 auto' }}>
+          <div style={{ display: 'flex', gap: 8, flex: '0 0 auto', alignItems: 'center' }}>
             <Button onClick={() => setShowConfig((v) => !v)}>配置</Button>
+            <select
+              value={translateLang}
+              onChange={(event) => setTranslateLang(event.target.value)}
+              style={{ ...styles.input, width: 118, padding: '7px 8px' }}
+              title="整页翻译目标语言"
+            >
+              {LANGUAGES.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <Button
+              disabled={busy !== null || !detail.sections.some((section) => section.imageUrl)}
+              title="对所有已出图分区做图内文字翻译"
+              onClick={doTranslate}
+            >
+              {busy === 'translate' ? '翻译中…' : '整页翻译'}
+            </Button>
             <Button
               variant="dark"
               disabled={busy !== null}

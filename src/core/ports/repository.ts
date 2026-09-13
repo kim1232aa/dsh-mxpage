@@ -164,7 +164,7 @@ export interface AssetRepository {
   updateSectionId(assetId: string, sectionId: string | null): Promise<void>
   updateMetadata(assetId: string, metadata: Record<string, unknown>): Promise<void>
   delete(id: string): Promise<void>
-  /** True when no `PageSection.currentImageAssetId` / `SectionVersion.imageAssetId` points at it. */
+  /** True while a `PageSection.currentImageAssetId` / `SectionVersion.imageAssetId` points at it. */
   isReferenced(assetId: string): Promise<boolean>
 }
 

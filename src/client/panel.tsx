@@ -10,20 +10,39 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
 import { MxpageApi, type ProjectDetailResponse, type ProjectSummary } from './api.ts'
+import { AnalysisView } from './views/analysis.tsx'
+import { BatchView } from './views/batch.tsx'
 import { ChannelsView } from './views/channels.tsx'
 import { EditorView } from './views/editor.tsx'
+import { ExportView } from './views/export.tsx'
+import { MonitorView } from './views/monitor.tsx'
 import { PlannerView } from './views/planner.tsx'
 import { XiaohongshuView } from './views/xiaohongshu.tsx'
 import { Badge, Button, Notice, styles, T } from './ui.tsx'
 
-type Tab = 'planner' | 'editor' | 'xiaohongshu' | 'channels'
+type Tab =
+  | 'analysis'
+  | 'planner'
+  | 'editor'
+  | 'export'
+  | 'xiaohongshu'
+  | 'batch'
+  | 'monitor'
+  | 'channels'
 
 const NAV: Array<[Tab, string, string]> = [
+  ['analysis', '分析', '🔍'],
   ['planner', '规划', '📐'],
   ['editor', '编辑', '✏️'],
+  ['export', '导出', '📦'],
   ['xiaohongshu', '小红书图文', '📕'],
+  ['batch', '批量 SKU', '🗂️'],
+  ['monitor', '监控', '📊'],
   ['channels', 'AI 配置', '🔌'],
 ]
+
+/** Tabs that need a selected project; the rest are project-independent. */
+const PROJECT_TABS: ReadonlySet<Tab> = new Set(['analysis', 'planner', 'editor', 'export'])
 
 function LogoMark() {
   return (
@@ -219,8 +238,34 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
             <ChannelsView api={api} />
           ) : tab === 'xiaohongshu' ? (
             <XiaohongshuView api={api} busy={busy} run={run} />
-          ) : !detail ? (
+          ) : tab === 'batch' ? (
+            <BatchView
+              api={api}
+              busy={busy}
+              run={run}
+              onOpenProject={(id) => {
+                void reloadProjects()
+                setProjectId(id)
+                setTab('analysis')
+              }}
+            />
+          ) : tab === 'monitor' ? (
+            <MonitorView api={api} />
+          ) : !detail || !PROJECT_TABS.has(tab) ? (
             <WelcomeUpload busy={busy} dragOver={dragOver} setDragOver={setDragOver} fileInput={fileInput} onFiles={createProject} />
+          ) : tab === 'analysis' ? (
+            <AnalysisView
+              api={api}
+              detail={detail}
+              busy={busy}
+              run={run}
+              reload={() => reloadDetail()}
+              onDeleted={() => {
+                setProjectId(null)
+                setDetail(null)
+                void reloadProjects()
+              }}
+            />
           ) : tab === 'planner' ? (
             <PlannerView
               api={api}
@@ -233,6 +278,8 @@ export function MxpagePanel(props: { api: MxpageApi; onClose: () => void }) {
                 setTab('editor')
               }}
             />
+          ) : tab === 'export' ? (
+            <ExportView api={api} detail={detail} busy={busy} run={run} />
           ) : (
             <EditorView
               api={api}

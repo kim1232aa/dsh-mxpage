@@ -153,6 +153,7 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
       'mxpage_analyze_product',
       'mxpage_channels',
       'mxpage_create_project',
+      'mxpage_delete_project',
       'mxpage_edit_section',
       'mxpage_export_page',
       'mxpage_generate_page',
@@ -161,6 +162,10 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
       'mxpage_job_status',
       'mxpage_plan_page',
       'mxpage_project_status',
+      'mxpage_set_main_asset',
+      'mxpage_translate_page',
+      'mxpage_update_project',
+      'mxpage_usage_stats',
       'mxpage_xiaohongshu_edit',
       'mxpage_xiaohongshu_generate',
       'mxpage_xiaohongshu_plan',
@@ -195,6 +200,22 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
       '/api/dsh-mxpage/xiaohongshu/plan',
       '/api/dsh-mxpage/xiaohongshu/generate',
       '/api/dsh-mxpage/xiaohongshu/edit',
+      // v0.3 additions: project/asset management, translate, tasks, monitor, batch
+      '/api/dsh-mxpage/project/update',
+      '/api/dsh-mxpage/project/delete',
+      '/api/dsh-mxpage/assets/reorder',
+      '/api/dsh-mxpage/assets/set-main',
+      '/api/dsh-mxpage/assets/delete',
+      '/api/dsh-mxpage/analysis/save',
+      '/api/dsh-mxpage/translate-page',
+      '/api/dsh-mxpage/tasks',
+      '/api/dsh-mxpage/tasks/retry',
+      '/api/dsh-mxpage/providers/test',
+      '/api/dsh-mxpage/providers/discover',
+      '/api/dsh-mxpage/monitor/usage',
+      '/api/dsh-mxpage/monitor/usage/clear',
+      '/api/dsh-mxpage/monitor/usage/delete',
+      '/api/dsh-mxpage/batch-create',
     ]) {
       assert.ok(paths.includes(expected), `missing panel route ${expected}`)
     }
@@ -223,6 +244,8 @@ test('built bundle applies and registers the full mxpage_* surface', async (t) =
       '/api/dsh-mxpage/job',
       '/api/dsh-mxpage/versions',
       '/api/dsh-mxpage/image',
+      '/api/dsh-mxpage/tasks',
+      '/api/dsh-mxpage/monitor/usage',
     ])
     for (const route of mock.routes) {
       if (!route.path) continue

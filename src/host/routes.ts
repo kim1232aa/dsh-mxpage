@@ -14,10 +14,25 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 
+import { OpenAICompatibleAdapter } from '../core/ai/adapters/openai-compatible.ts'
+import { normalizeDetectedModels } from '../core/ai/capability-detector.ts'
+import { recommendDefaultModels } from '../core/ai/model-matcher.ts'
+import {
+  humanizeEntry,
+  summarizeUsage,
+  type QuotaState,
+} from '../core/monitor/api-usage.ts'
+import type { UsageCategory } from '../core/ports/logger.ts'
 import type { Config } from '../config.ts'
 import { ROUTES } from '../shared/routes.ts'
 import { redactSecrets } from '../util/redact.ts'
 import type { MxpageRuntime } from './index.ts'
+import { readChannelKey } from './provider-resolver.ts'
+import {
+  clearUsageEntries,
+  deleteUsageEntry,
+  readUsageEntries,
+} from './usage-monitor.ts'
 
 export { ROUTES }
 
@@ -285,6 +300,95 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
       }),
     },
     {
+      // Upstream `PATCH /api/projects/[id]`: rename + platform/style edits.
+      kind: 'exact',
+      path: ROUTES.projectUpdate,
+       handler: envelope('POST', async (body) => {
+        const id = asString(body.id)
+        if (!id) throw new Error('id is required')
+        const project = await runtime.host.repository.project.update(id, {
+          name: asString(body.name),
+          platform: asString(body.platform),
+          style: asString(body.style),
+          description: asString(body.description) ?? null,
+        })
+        return {
+          project: {
+            id: project.id,
+            name: project.name,
+            platform: project.platform,
+            style: project.style,
+            status: project.status,
+          },
+        }
+      }),
+    },
+    {
+      // Upstream `DELETE /api/projects/[id]`: record + workspace files.
+      kind: 'exact',
+      path: ROUTES.projectDelete,
+       handler: envelope('POST', async (body) => {
+        const id = asString(body.id)
+        if (!id) throw new Error('id is required')
+        const existing = await runtime.host.repository.project.get(id)
+        if (!existing) throw new Error(`project not found: ${id}`)
+        await runtime.host.repository.project.delete(id)
+        await runtime.assets.removeProjectDirs(id).catch((error: unknown) => {
+          runtime.logger.warn('[mxpage] project files cleanup failed', {
+            projectId: id,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+        return { deleted: true }
+      }),
+    },
+    {
+      // Upstream `POST /api/assets/[id]/reorder`.
+      kind: 'exact',
+      path: ROUTES.assetsReorder,
+       handler: envelope('POST', async (body) => {
+        const projectId = asString(body.projectId)
+        const ordered = body.orderedAssetIds
+        if (!projectId || !Array.isArray(ordered)) {
+          throw new Error('projectId and orderedAssetIds are required')
+        }
+        let index = 0
+        for (const assetId of ordered as string[]) {
+          await runtime.host.repository.asset.updateSortOrder(assetId, index)
+          index += 1
+        }
+        return { reordered: index }
+      }),
+    },
+    {
+      // Upstream `POST /api/assets/[id]/set-main`.
+      kind: 'exact',
+      path: ROUTES.assetSetMain,
+       handler: envelope('POST', async (body) => {
+        const projectId = asString(body.projectId)
+        const assetId = asString(body.assetId)
+        if (!projectId || !assetId) throw new Error('projectId and assetId are required')
+        await runtime.host.repository.asset.setMain(projectId, assetId)
+        return {}
+      }),
+    },
+    {
+      // Upstream `DELETE /api/assets/[id]`: refuse while a section/version points at it.
+      kind: 'exact',
+      path: ROUTES.assetDelete,
+       handler: envelope('POST', async (body) => {
+        const assetId = asString(body.assetId)
+        if (!assetId) throw new Error('assetId is required')
+        const referenced = await runtime.host.repository.asset.isReferenced(assetId)
+        if (referenced) {
+          throw new Error('素材正被分区或版本引用，请先切换分区图片后再删除。')
+        }
+        const removed = await runtime.assets.deleteAssetRecord(assetId)
+        if (!removed) throw new Error(`asset not found: ${assetId}`)
+        return { deleted: true }
+      }),
+    },
+    {
       kind: 'exact',
       path: ROUTES.upload,
        handler: envelope('POST', async (body) => {
@@ -321,6 +425,25 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
         if (!projectId) throw new Error('projectId is required')
         const result = await runtime.analysis.analyzeProject(projectId, asString(body.model) ?? null)
         return { analysis: result.normalizedResult }
+      }),
+    },
+    {
+      // Upstream analysis page saves edited structured fields back to the
+      // ProductAnalysis row. Raw and normalized stay identical here because
+      // the panel edits the normalized projection directly.
+      kind: 'exact',
+      path: ROUTES.analysisSave,
+       handler: envelope('POST', async (body) => {
+        const projectId = asString(body.projectId)
+        const analysis = body.analysis
+        if (!projectId || !analysis || typeof analysis !== 'object') {
+          throw new Error('projectId and analysis are required')
+        }
+        await runtime.host.repository.analysis.upsert(projectId, {
+          rawResult: analysis,
+          normalizedResult: analysis,
+        })
+        return { saved: true }
       }),
     },
     {
@@ -502,6 +625,62 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
       }),
     },
     {
+      // Upstream `POST /api/projects/[id]/translate-page`: a background task
+      // that translate-edits every section which already has an image.
+      kind: 'exact',
+      path: ROUTES.translatePage,
+       handler: envelope('POST', async (body) => {
+        const projectId = asString(body.projectId)
+        const targetLanguage = asString(body.targetLanguage)
+        if (!projectId || !targetLanguage) {
+          throw new Error('projectId and targetLanguage are required')
+        }
+        const sections = await runtime.host.repository.section.list(projectId)
+        const targets = sections
+          .filter((section) => section.currentImageAssetId)
+          .sort((a, b) => a.order - b.order)
+        if (targets.length === 0) throw new Error('没有已出图的分区可翻译')
+
+        const total = targets.length
+        const handle = runtime.runner.start({
+          kind: 'mxpage_translate',
+          label: `Translate ${total} section(s) → ${targetLanguage}`,
+          owner: projectId,
+          async run(ctx) {
+            let done = 0
+            let failed = 0
+            for (const section of targets) {
+              if (ctx.signal.aborted) break
+              await ctx.progress.patch({
+                currentSectionId: section.id,
+                completedItems: done,
+                failedItems: failed,
+                totalItems: total,
+                targetLanguage,
+                heartbeatAt: new Date().toISOString(),
+              })
+              try {
+                await runtime.generation.editSectionImage(projectId, section.id, {
+                  editMode: 'translate',
+                  targetLanguage: targetLanguage as never,
+                })
+                done += 1
+              } catch (error) {
+                failed += 1
+                runtime.logger.warn('[mxpage] translate section failed', {
+                  projectId,
+                  sectionId: section.id,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }
+            }
+            return { projectId, completed: done, failed, total, targetLanguage }
+          },
+        })
+        return { jobId: handle.id, total }
+      }),
+    },
+    {
       kind: 'exact',
       path: ROUTES.job,
        handler: envelope('GET', async (_body, req) => {
@@ -538,6 +717,121 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
         }
         await runtime.tasks.cancelTask(jobId)
         return { cancelled: true }
+      }),
+    },
+
+    // -- task history + retry -------------------------------------------------
+    {
+      // Upstream `/history`: recent workflow tasks, newest first.
+      kind: 'exact',
+      path: ROUTES.tasks,
+       handler: envelope('GET', async (_body, req) => {
+        const params = query(req)
+        const projectId = params.get('projectId')
+        const limit = Number(params.get('limit') ?? 50) || 50
+        // Tasks are project-scoped in the repository; the panel history view
+        // aggregates across projects by listing each project's tasks.
+        const projects = projectId
+          ? [{ id: projectId }]
+          : await runtime.host.repository.project.list({ limit: 100, includeSystem: true })
+        const all = (
+          await Promise.all(
+            projects.map((project) => runtime.host.repository.task.list(project.id, limit)),
+          )
+        )
+          .flat()
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .slice(0, limit)
+        return {
+          tasks: all.map((task) => ({
+            id: task.id,
+            projectId: task.projectId,
+            sectionId: task.sectionId,
+            taskType: task.taskType,
+            status: task.status,
+            errorMessage: task.errorMessage,
+            inputPayload: task.inputPayload,
+            outputPayload: task.outputPayload,
+            createdAt: task.createdAt,
+            completedAt: task.completedAt,
+          })),
+        }
+      }),
+    },
+    {
+      // Upstream `POST /api/tasks/[taskId]/retry`: re-dispatch the same work.
+      kind: 'exact',
+      path: ROUTES.taskRetry,
+       handler: envelope('POST', async (body) => {
+        const taskId = asString(body.taskId)
+        if (!taskId) throw new Error('taskId is required')
+        const task = await runtime.host.repository.task.get(taskId)
+        if (!task) throw new Error(`task not found: ${taskId}`)
+        if (task.status === 'RUNNING' || task.status === 'PENDING') {
+          throw new Error('任务仍在进行中，请先取消再重试。')
+        }
+        const input = (task.inputPayload ?? {}) as Record<string, unknown>
+
+        if (
+          (task.taskType === 'GENERATE' || task.taskType === 'REGENERATE') &&
+          task.sectionId
+        ) {
+          const result = await runtime.generation.generateSectionImage(
+            task.projectId,
+            task.sectionId,
+          )
+          return {
+            retried: true,
+            taskType: task.taskType,
+            versionId: result.version.id,
+            imageUrl: imageUrl(result.imageAsset.filePath),
+          }
+        }
+
+        if (task.taskType === 'TRANSLATE_PAGE') {
+          const targetLanguage = asString(input.targetLanguage)
+          if (!targetLanguage) throw new Error('原任务缺少 targetLanguage，无法重试')
+          const sections = await runtime.host.repository.section.list(task.projectId)
+          const targets = sections
+            .filter((section) => section.currentImageAssetId)
+            .sort((a, b) => a.order - b.order)
+          if (targets.length === 0) throw new Error('没有已出图的分区可翻译')
+          const total = targets.length
+          const handle = runtime.runner.start({
+            kind: 'mxpage_translate',
+            label: `Translate ${total} section(s) → ${targetLanguage}`,
+            owner: task.projectId,
+            async run(ctx) {
+              let done = 0
+              for (const section of targets) {
+                if (ctx.signal.aborted) break
+                await ctx.progress.patch({
+                  currentSectionId: section.id,
+                  completedItems: done,
+                  totalItems: total,
+                  heartbeatAt: new Date().toISOString(),
+                })
+                try {
+                  await runtime.generation.editSectionImage(task.projectId, section.id, {
+                    editMode: 'translate',
+                    targetLanguage: targetLanguage as never,
+                  })
+                } catch (error) {
+                  runtime.logger.warn('[mxpage] translate retry section failed', {
+                    projectId: task.projectId,
+                    sectionId: section.id,
+                    error: error instanceof Error ? error.message : String(error),
+                  })
+                }
+                done += 1
+              }
+              return { projectId: task.projectId, completed: done, total, targetLanguage }
+            },
+          })
+          return { retried: true, taskType: task.taskType, jobId: handle.id, total }
+        }
+
+        throw new Error(`任务类型 ${task.taskType} 暂不支持在面板重试`)
       }),
     },
 
@@ -660,6 +954,176 @@ export function makeMxpageRoutes(deps: RouteDeps): WebRoute[] {
             models: channel.models ?? [],
           })),
         }
+      }),
+    },
+
+    // -- provider utilities ---------------------------------------------------
+    {
+      // Upstream `POST /api/providers/test`: live connectivity probe of one channel.
+      kind: 'exact',
+      path: ROUTES.providerTest,
+       handler: envelope('POST', async (body) => {
+        const channelId = asString(body.channelId)
+        const channel = (config.channels ?? []).find((item) => item.id === channelId)
+        if (!channel) throw new Error(`channel not found: ${channelId}`)
+        const apiKey = readChannelKey(channel)
+        if (!apiKey) throw new Error(`渠道 ${channel.id} 未配置密钥。`)
+        const adapter = new OpenAICompatibleAdapter(channel.baseUrl, apiKey, runtime.logger)
+        const result = await adapter.testConnection()
+        return { result }
+      }),
+    },
+    {
+      // Upstream `POST /api/providers/discover-models` + `detect-capabilities`:
+      // list GET /models, classify by name, recommend per-role defaults.
+      kind: 'exact',
+      path: ROUTES.providerDiscover,
+       handler: envelope('POST', async (body) => {
+        const channelId = asString(body.channelId)
+        const channel = (config.channels ?? []).find((item) => item.id === channelId)
+        if (!channel) throw new Error(`channel not found: ${channelId}`)
+        const apiKey = readChannelKey(channel)
+        if (!apiKey) throw new Error(`渠道 ${channel.id} 未配置密钥。`)
+        const adapter = new OpenAICompatibleAdapter(channel.baseUrl, apiKey, runtime.logger)
+        const listed = await adapter.listModels()
+        const models = listed.map((item) => ({
+          id: item.id,
+          label: item.label ?? item.id,
+        }))
+        const detected = normalizeDetectedModels(models)
+        return {
+          models: detected.map((model) => ({
+            modelId: model.modelId,
+            label: model.label,
+            capabilities: model.capabilities,
+            roles: model.roles,
+          })),
+          recommendations: recommendDefaultModels(detected),
+        }
+      }),
+    },
+
+    // -- usage monitor --------------------------------------------------------
+    {
+      // Upstream `/monitor/usage`: summary aggregates + filtered entries.
+      kind: 'exact',
+      path: ROUTES.usage,
+       handler: envelope('GET', async (_body, req) => {
+        const params = query(req)
+        const entries = (await readUsageEntries(runtime.storeRoot)).map(humanizeEntry)
+        const summary = summarizeUsage(entries, {
+          hours: Number(params.get('hours') ?? 24) || 24,
+          limit: Number(params.get('limit') ?? 50) || 50,
+          page: Number(params.get('page') ?? 1) || 1,
+          projectId: params.get('projectId') || undefined,
+          category: (params.get('category') || 'all') as UsageCategory | 'all',
+          quotaState: (params.get('quotaState') || 'all') as QuotaState | 'all',
+          success: (params.get('success') || 'all') as 'all' | 'success' | 'failed',
+        })
+        return { summary }
+      }),
+    },
+    {
+      kind: 'exact',
+      path: ROUTES.usageClear,
+       handler: envelope('POST', async () => clearUsageEntries(runtime.storeRoot)),
+    },
+    {
+      kind: 'exact',
+      path: ROUTES.usageDelete,
+       handler: envelope('POST', async (body) => {
+        const id = asString(body.id)
+        if (!id) throw new Error('id is required')
+        return deleteUsageEntry(runtime.storeRoot, id)
+      }),
+    },
+
+    // -- batch SKU ------------------------------------------------------------
+    {
+      // Upstream `POST /api/tasks/batch-create`: one project per SKU image.
+      // Project creation is local + fast, so it is synchronous; the optional
+      // analyze→plan pass runs as ONE background job with per-item progress.
+      kind: 'exact',
+      path: ROUTES.batchCreate,
+       handler: envelope('POST', async (body) => {
+        const items = Array.isArray(body.items) ? (body.items as Array<Record<string, unknown>>) : []
+        if (items.length < 1 || items.length > 20) throw new Error('supply 1–20 SKU items')
+        const created: Array<{ projectId: string; name: string }> = []
+        for (const [index, item] of items.entries()) {
+          const fileName = asString(item.fileName)
+          const base64Data = asString(item.base64Data)
+          if (!fileName || !base64Data) throw new Error(`item ${index + 1}: fileName and base64Data are required`)
+          const project = await runtime.host.repository.project.create({
+            name: asString(item.name) ?? fileName.replace(/\.[^.]+$/, ''),
+            platform: asString(body.platform) ?? config.defaultPlatform,
+            style: asString(body.style) ?? config.defaultStyle,
+          })
+          await runtime.assets.saveUploadAsset({
+            projectId: project.id,
+            type: 'MAIN',
+            fileName,
+            mimeType: asString(item.mimeType) ?? 'image/png',
+            fileBuffer: Buffer.from(base64Data.replace(/^data:[^;]+;base64,/, ''), 'base64'),
+            sortOrder: 0,
+            isMain: true,
+          })
+          await runtime.host.repository.project.mergeModelSnapshot(project.id, {
+            previewConfig: {
+              heroImageCount: config.defaultHeroCount,
+              detailSectionCount: config.defaultDetailCount,
+              imageAspectRatio: config.defaultDetailAspectRatio,
+              contentLanguage: config.defaultLanguage,
+            },
+          })
+          created.push({ projectId: project.id, name: project.name })
+        }
+
+        let jobId: string | null = null
+        if (body.autoAnalyze === true) {
+          const total = created.length
+          const handle = runtime.runner.start({
+            kind: 'mxpage_batch',
+            label: `Batch analyze+plan ${total} project(s)`,
+            owner: created[0]!.projectId,
+            async run(ctx) {
+              let done = 0
+              const results: Array<Record<string, unknown>> = []
+              for (const item of created) {
+                if (ctx.signal.aborted) break
+                await ctx.progress.patch({
+                  currentProjectId: item.projectId,
+                  completedItems: done,
+                  totalItems: total,
+                  heartbeatAt: new Date().toISOString(),
+                })
+                try {
+                  await runtime.analysis.analyzeProject(item.projectId, null)
+                  await runtime.planner.planSections(item.projectId, {
+                    modelId: null,
+                    previewConfig: {
+                      heroImageCount: config.defaultHeroCount,
+                      detailSectionCount: config.defaultDetailCount,
+                      imageAspectRatio: config.defaultDetailAspectRatio as '3:4' | '9:16',
+                      contentLanguage: config.defaultLanguage as never,
+                    },
+                  })
+                  results.push({ projectId: item.projectId, ok: true })
+                } catch (error) {
+                  // one failing SKU must not take the batch down (验收 §8)
+                  results.push({
+                    projectId: item.projectId,
+                    ok: false,
+                    error: redactSecrets(error instanceof Error ? error.message : String(error)),
+                  })
+                }
+                done += 1
+              }
+              return { completed: done, total, results }
+            },
+          })
+          jobId = handle.id
+        }
+        return { projects: created, jobId }
       }),
     },
 

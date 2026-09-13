@@ -15,8 +15,10 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import type { Config } from '../config.ts'
+import { summarizeUsage } from '../core/monitor/api-usage.ts'
 import type { MxpageRuntime } from '../host/index.ts'
 import { resolveStoreRoot } from '../host/index.ts'
+import { readUsageEntries } from '../host/usage-monitor.ts'
 import { redactSecrets } from '../util/redact.ts'
 
 // ---------------------------------------------------------------------------
@@ -842,6 +844,231 @@ export function registerMxpageTools(
   )
 
   // -- diagnostics -----------------------------------------------------------
+
+  // -- page translate (upstream translate-page task) ---------------------------
+
+  disposers.push(
+    ctx.tools.register(
+      defineTool({
+        name: 'mxpage_translate_page',
+        description:
+          'Translate the whole page in the background: every section that already has an image gets a translate edit (all in-image text re-lettered into the target language), producing new versions. Returns a job id — poll with mxpage_job_status.',
+        parameters: {
+          project_id: { type: 'string', required: true },
+          target_language: {
+            type: 'string',
+            required: true,
+            description: 'e.g. zh-CN, en-US, ja-JP, ko-KR',
+          },
+        },
+        output: { schema: objectSchema, render: renderJson },
+        async execute(args, exec: ExecContext) {
+          try {
+            const projectId = args.project_id as string
+            const targetLanguage = args.target_language as string
+            const sections = await host.repository.section.list(projectId)
+            const targets = sections
+              .filter((section) => section.currentImageAssetId)
+              .sort((a, b) => a.order - b.order)
+            if (targets.length === 0) {
+              return fail('MXPAGE_STATE', 'no generated sections to translate')
+            }
+            if (exec.signal?.aborted) return fail('MXPAGE_CANCELLED', 'canceled before start')
+
+            const total = targets.length
+            const handle = runtime.runner.start({
+              kind: 'mxpage_translate',
+              label: `Translate ${total} section(s) → ${targetLanguage}`,
+              owner: projectId,
+              async run(runCtx) {
+                let done = 0
+                let failedCount = 0
+                for (const section of targets) {
+                  if (runCtx.signal.aborted) break
+                  await runCtx.progress.patch({
+                    currentSectionId: section.id,
+                    completedItems: done,
+                    failedItems: failedCount,
+                    totalItems: total,
+                    heartbeatAt: new Date().toISOString(),
+                  })
+                  try {
+                    await generation.editSectionImage(projectId, section.id, {
+                      editMode: 'translate',
+                      targetLanguage: targetLanguage as never,
+                    })
+                    done += 1
+                  } catch (error) {
+                    failedCount += 1
+                    runtime.logger.warn('[mxpage] translate section failed', {
+                      projectId,
+                      sectionId: section.id,
+                      error: error instanceof Error ? error.message : String(error),
+                    })
+                  }
+                }
+                return { projectId, completed: done, failed: failedCount, total, targetLanguage }
+              },
+            })
+            return ok({ kind: 'background', jobId: handle.id, total })
+          } catch (error) {
+            return toFailure(error)
+          }
+        },
+      }),
+    ),
+  )
+
+  // -- project management -----------------------------------------------------
+
+  disposers.push(
+    ctx.tools.register(
+      defineTool({
+        name: 'mxpage_update_project',
+        description: 'Rename a project or change its platform / style / description.',
+        parameters: {
+          project_id: { type: 'string', required: true },
+          name: { type: 'string' },
+          platform: { type: 'string' },
+          style: { type: 'string' },
+          description: { type: 'string' },
+        },
+        output: { schema: objectSchema, render: renderJson },
+        async execute(args) {
+          try {
+            const project = await host.repository.project.update(args.project_id as string, {
+              name: (args.name as string | undefined)?.trim() || undefined,
+              platform: (args.platform as string | undefined)?.trim() || undefined,
+              style: (args.style as string | undefined)?.trim() || undefined,
+              description: (args.description as string | undefined) ?? undefined,
+            })
+            return ok({
+              projectId: project.id,
+              name: project.name,
+              platform: project.platform,
+              style: project.style,
+              status: project.status,
+            })
+          } catch (error) {
+            return toFailure(error)
+          }
+        },
+      }),
+    ),
+  )
+
+  disposers.push(
+    ctx.tools.register(
+      defineTool({
+        name: 'mxpage_delete_project',
+        description:
+          'Delete a project and every workspace file it owns (uploads, generated images, exports). This is destructive and irreversible — confirm with the user first.',
+        parameters: {
+          project_id: { type: 'string', required: true },
+          confirm: { type: 'boolean', required: true, description: 'Must be true to delete.' },
+        },
+        output: { schema: objectSchema, render: renderJson },
+        async execute(args) {
+          try {
+            if (args.confirm !== true) {
+              return fail('MXPAGE_CONFIRM', 'pass confirm: true to delete the project')
+            }
+            const projectId = args.project_id as string
+            const existing = await host.repository.project.get(projectId)
+            if (!existing) return fail('MXPAGE_NOT_FOUND', `unknown project ${projectId}`)
+            await host.repository.project.delete(projectId)
+            await runtime.assets.removeProjectDirs(projectId)
+            return ok({ projectId, deleted: true })
+          } catch (error) {
+            return toFailure(error)
+          }
+        },
+      }),
+    ),
+  )
+
+  disposers.push(
+    ctx.tools.register(
+      defineTool({
+        name: 'mxpage_set_main_asset',
+        description:
+          "Promote one of a project's uploaded product photos to the main image (the hero reference for every generation).",
+        parameters: {
+          project_id: { type: 'string', required: true },
+          asset_id: { type: 'string', description: 'Asset id from the panel or project status.' },
+          image_path: { type: 'string', description: 'Workspace path of the asset (alternative to asset_id).' },
+        },
+        output: { schema: objectSchema, render: renderJson },
+        async execute(args) {
+          try {
+            const projectId = args.project_id as string
+            let assetId = (args.asset_id as string | undefined)?.trim()
+            if (!assetId) {
+              const imagePath = (args.image_path as string | undefined)?.trim()
+              if (!imagePath) return fail('MXPAGE_ARGS', 'asset_id or image_path is required')
+              const assets = await host.repository.asset.list({ projectId })
+              const match = assets.find(
+                (asset) => asset.filePath === imagePath || asset.fileName === imagePath,
+              )
+              if (!match) return fail('MXPAGE_NOT_FOUND', `no asset matches ${imagePath}`)
+              assetId = match.id
+            }
+            await host.repository.asset.setMain(projectId, assetId)
+            return ok({ projectId, mainAssetId: assetId })
+          } catch (error) {
+            return toFailure(error)
+          }
+        },
+      }),
+    ),
+  )
+
+  // -- usage monitor ------------------------------------------------------------
+
+  disposers.push(
+    ctx.tools.register(
+      defineTool({
+        name: 'mxpage_usage_stats',
+        description:
+          'Summarize recent MxPage API usage from the workspace ledger: totals, success rate, chat vs image calls, rate/spending-limit hits, top models. Read-only diagnostic for quota debugging.',
+        parameters: {
+          hours: { type: 'number', description: 'Lookback window, default 24.' },
+        },
+        output: { schema: objectSchema, render: renderJson },
+        async execute(args) {
+          try {
+            const hours = clamp(args.hours as number | undefined, 1, 24 * 30, 24)
+            const entries = await readUsageEntries(storeRoot)
+            const summary = summarizeUsage(entries, { hours, limit: 20 })
+            return ok({
+              hours: summary.hours,
+              totalRequests: summary.totalRequests,
+              successRequests: summary.successRequests,
+              failedRequests: summary.failedRequests,
+              chatRequests: summary.chatRequests,
+              imageRequests: summary.imageRequests,
+              spendingLimitedRequests: summary.spendingLimitedRequests,
+              rateLimitedRequests: summary.rateLimitedRequests,
+              averageDurationMs: summary.averageDurationMs,
+              topModels: summary.topModels,
+              recentErrors: summary.recentEntries
+                .filter((entry) => !entry.ok)
+                .slice(0, 5)
+                .map((entry) => ({
+                  at: entry.at,
+                  model: entry.model,
+                  status: entry.status,
+                  endpoint: entry.endpoint,
+                  error: entry.errorMessage,
+                })),
+            })
+          } catch (error) {
+            return toFailure(error)
+          }
+        },
+      }),
+    ),
+  )
 
   disposers.push(
     ctx.tools.register(

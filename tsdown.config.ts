@@ -62,4 +62,21 @@ export default defineConfig([
         },
       ]
     : []),
+  // Test-only SSR harness for the panel views (test/ui-views.test.ts). Emitted
+  // next to the bundles so the test can import it; NOT shipped (`files` only
+  // lists lib/, but keeping the name distinct makes the intent obvious).
+  ...(existsSync(join(here, 'test/ui-entry.tsx'))
+    ? [
+        {
+          entry: { 'ui-test': 'test/ui-entry.tsx' },
+          format: ['esm' as const],
+          platform: 'node' as const,
+          outDir: 'lib',
+          clean: false,
+          dts: false,
+          sourcemap: false,
+          external: ['react', 'react-dom', 'react-dom/server'],
+        },
+      ]
+    : []),
 ])

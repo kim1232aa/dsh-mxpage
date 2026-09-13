@@ -38,7 +38,8 @@ interface CachedCatalog {
 
 const CATALOG_TTL_MS = 10 * 60_000
 
-function readChannelKey(channel: ChannelConfig): string {
+/** Exported for the provider test/discover routes, which need the same key order. */
+export function readChannelKey(channel: ChannelConfig): string {
   if (channel.apiKeyEnv) {
     const fromEnv = process.env[channel.apiKeyEnv]
     if (fromEnv && fromEnv.trim()) return fromEnv.trim()

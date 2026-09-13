@@ -175,6 +175,60 @@ export interface XiaohongshuPlan {
   [key: string]: unknown
 }
 
+export interface TaskView {
+  id: string
+  projectId: string
+  sectionId: string | null
+  taskType: string
+  status: string
+  errorMessage: string | null
+  outputPayload: Record<string, unknown> | null
+  createdAt: string
+  completedAt: string | null
+}
+
+export interface UsageEntry {
+  id: string
+  at: string
+  endpoint: string
+  method: string
+  model: string | null
+  status: number
+  ok: boolean
+  durationMs: number
+  category: string
+  quotaState: string
+  errorMessage: string | null
+  projectId: string | null
+  operation: string | null
+  attemptCount: number
+}
+
+export interface UsageSummary {
+  hours: number
+  page: number
+  pageSize: number
+  totalPages: number
+  totalRequests: number
+  successRequests: number
+  failedRequests: number
+  chatRequests: number
+  imageRequests: number
+  spendingLimitedRequests: number
+  rateLimitedRequests: number
+  averageDurationMs: number
+  topModels: Array<{ model: string; count: number }>
+  topProjects: Array<{ projectId: string; count: number }>
+  recentEntries: UsageEntry[]
+}
+
+export interface DiscoveredModel {
+  modelId: string
+  label?: string
+  capabilities: Record<string, boolean | undefined>
+  roles?: Record<string, boolean | undefined>
+}
+
 // ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
@@ -206,6 +260,95 @@ export class MxpageApi {
 
   getProject(id: string): Promise<ProjectDetailResponse> {
     return get(ROUTES.project, { id })
+  }
+
+  updateProject(
+    id: string,
+    patch: { name?: string; platform?: string; style?: string; description?: string },
+  ): Promise<{ project: { id: string; name: string; platform: string; style: string; status: string } }> {
+    return post(ROUTES.projectUpdate, { id, ...patch })
+  }
+
+  deleteProject(id: string): Promise<{ deleted: boolean }> {
+    return post(ROUTES.projectDelete, { id })
+  }
+
+  reorderAssets(projectId: string, orderedAssetIds: string[]): Promise<{ reordered: number }> {
+    return post(ROUTES.assetsReorder, { projectId, orderedAssetIds })
+  }
+
+  setMainAsset(projectId: string, assetId: string): Promise<unknown> {
+    return post(ROUTES.assetSetMain, { projectId, assetId })
+  }
+
+  deleteAsset(assetId: string): Promise<{ deleted: boolean }> {
+    return post(ROUTES.assetDelete, { assetId })
+  }
+
+  saveAnalysis(projectId: string, analysis: Record<string, unknown>): Promise<{ saved: boolean }> {
+    return post(ROUTES.analysisSave, { projectId, analysis })
+  }
+
+  translatePage(projectId: string, targetLanguage: string): Promise<{ jobId: string; total: number }> {
+    return post(ROUTES.translatePage, { projectId, targetLanguage })
+  }
+
+  listTasks(projectId?: string, limit = 50): Promise<{ tasks: TaskView[] }> {
+    return get(ROUTES.tasks, projectId ? { projectId, limit: String(limit) } : { limit: String(limit) })
+  }
+
+  retryTask(taskId: string): Promise<{ retried: boolean; taskType: string; jobId?: string; imageUrl?: string }> {
+    return post(ROUTES.taskRetry, { taskId })
+  }
+
+  providerTest(channelId: string): Promise<{ result: unknown }> {
+    return post(ROUTES.providerTest, { channelId })
+  }
+
+  providerDiscover(channelId: string): Promise<{
+    models: DiscoveredModel[]
+    recommendations: Record<string, string | null>
+  }> {
+    return post(ROUTES.providerDiscover, { channelId })
+  }
+
+  usage(params: {
+    hours?: number
+    page?: number
+    limit?: number
+    projectId?: string
+    category?: string
+    quotaState?: string
+    success?: string
+  }): Promise<{ summary: UsageSummary }> {
+    const search: Record<string, string> = {}
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== '') search[key] = String(value)
+    }
+    return get(ROUTES.usage, search)
+  }
+
+  usageClear(): Promise<{ cleared: boolean }> {
+    return post(ROUTES.usageClear)
+  }
+
+  usageDelete(id: string): Promise<{ deleted: boolean }> {
+    return post(ROUTES.usageDelete, { id })
+  }
+
+  async batchCreate(
+    items: Array<{ name: string; file: File }>,
+    options: { autoAnalyze?: boolean; platform?: string; style?: string } = {},
+  ): Promise<{ projects: Array<{ projectId: string; name: string }>; jobId: string | null }> {
+    const payload = await Promise.all(
+      items.map(async (item) => ({
+        name: item.name,
+        fileName: item.file.name,
+        mimeType: item.file.type || 'image/png',
+        base64Data: await fileToBase64(item.file),
+      })),
+    )
+    return post(ROUTES.batchCreate, { items: payload, ...options })
   }
 
   upload(input: {

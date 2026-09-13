@@ -1,6 +1,6 @@
 {
   "name": "dsh-mxpage",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "MxPage for DeepSeek Harness: ecommerce product-image workbench (analyze → plan → Visual Prompt Agent → generate) on top of an extracted, host-agnostic core of ziguishian/MxPage.",
   "type": "module",
