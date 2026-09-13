@@ -1,0 +1,40 @@
+# Push verification run — 2026-09-14T2013Z
+
+## What
+Final delivery of v0.3.0 to origin/main after MCP-relay replication was
+replaced by an authenticated `git push` (user-supplied PAT, held in an env
+var + credential helper only; never written to git config, the remote URL,
+or any committed file).
+
+## Commands + evidence
+
+1. Connectivity probe: `curl -sI https://github.com` → HTTP 200;
+   `…/dsh-mxpage.git/info/refs?service=git-upload-pack` → 200 (direct push
+   path available, no proxy needed).
+
+2. `git fetch origin main` → remote tip was e3b3b5b (MCP push_files relay
+   chain). `git diff --stat origin/main main` showed the only remaining
+   deltas: src/host/routes.ts (+464), lib/index.js, lib/client.js,
+   lib/ui-test.js (new), docs/04-验收标准.md (2-line MCP transcription
+   drift, corrected by the real push).
+
+3. `git push --force-with-lease origin main` →
+   `+ e3b3b5b...63600f9 main -> main (forced update)`.
+   History is now the clean two-commit delivery on top of 4f3e179:
+   - 1200801 feat: v0.3 — 分析/导出/批量/监控四面板 + 整页翻译 + 项目管理与用量工具
+   - 63600f9 build: lib/ artifacts for v0.3.0
+
+4. Byte-exactness proof: fresh `git clone --depth 1` of origin/main to a
+   scratch dir, then `diff -r --exclude=.git --exclude=node_modules`
+   against the working tree → zero output (`DIFF-CLEAN`). Clone HEAD =
+   63600f9b9af41b44742985e129a533c0fa3b57cc.
+
+## Result
+origin/main == the locally verified tree (64/64 tests, build green, tsc
+clean — see 2026-09-14T0235Z-final.txt). Deliverable confirmed against
+verifier/v1/criteria.md; nothing left in the push queue.
+
+## Security note
+The PAT used for the push appeared in the conversation transcript. It was
+used only via a process env var with an inline credential helper and was
+redacted from command output. It should be rotated by the owner.
